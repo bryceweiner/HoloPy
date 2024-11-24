@@ -12,6 +12,7 @@ from ..config.constants import (
     COUPLING_CONSTANT,
     SPEED_OF_LIGHT
 )
+from scipy.fft import fft, ifft
 
 logger = logging.getLogger(__name__)
 
@@ -171,5 +172,112 @@ class FieldPropagator:
                 del self._kernel_cache[next(iter(self._kernel_cache))]
                 
             self._kernel_cache[key] = kernel
+            
+        return self._kernel_cache[key]
+
+class DualContinuumPropagator(FieldPropagator):
+    """
+    Extends FieldPropagator for dual continuum evolution with holographic corrections.
+    """
+    
+    def __init__(
+        self,
+        spatial_points: int,
+        spatial_extent: float,
+        cache_size: int = 1000
+    ):
+        """Initialize the dual continuum propagator."""
+        super().__init__(spatial_points, 0.01, spatial_extent, cache_size)
+        self._init_dual_continuum_kernel()
+        
+        logger.info(
+            f"Initialized DualContinuumPropagator with {spatial_points} points"
+        )
+    
+    def _init_dual_continuum_kernel(self) -> None:
+        """Initialize the dual continuum specific kernel components."""
+        try:
+            # Calculate distance matrix with holographic corrections
+            x_matrix = self.x_grid[:, np.newaxis] - self.x_grid[np.newaxis, :]
+            
+            # Enhanced kernel incorporating active inference
+            self.dual_kernel = (
+                np.exp(-INFORMATION_GENERATION_RATE * np.abs(x_matrix)) *
+                (1 + INFORMATION_GENERATION_RATE * np.abs(x_matrix)) *
+                (1 + self._active_inference_potential()[:, np.newaxis])
+            )
+            
+            logger.debug("Initialized dual continuum kernel")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize dual continuum kernel: {str(e)}")
+            raise
+    
+    def propagate_dual(
+        self,
+        matter_wavefunction: np.ndarray,
+        antimatter_wavefunction: np.ndarray,
+        dt: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Propagate both matter and antimatter wavefunctions with holographic corrections.
+        
+        Args:
+            matter_wavefunction: Matter component state vector
+            antimatter_wavefunction: Antimatter component state vector
+            dt: Time step for propagation
+            
+        Returns:
+            Tuple of propagated matter and antimatter wavefunctions
+        """
+        try:
+            # Get standard propagator for the time step
+            propagator = self._get_propagator(dt)
+            
+            # Apply propagator to matter continuum with corrections
+            matter_new = propagator @ matter_wavefunction
+            matter_new *= np.exp(-INFORMATION_GENERATION_RATE * dt / 2)
+            
+            # Apply propagator to antimatter continuum
+            # Note: Different evolution due to holographic asymmetry
+            antimatter_new = propagator @ antimatter_wavefunction
+            
+            # Apply dual continuum specific evolution
+            matter_new = np.dot(self.dual_kernel, matter_new)
+            antimatter_new = np.dot(self.dual_kernel, antimatter_new)
+            
+            # Normalize states
+            matter_new /= np.sqrt(np.sum(np.abs(matter_new)**2))
+            antimatter_new /= np.sqrt(np.sum(np.abs(antimatter_new)**2))
+            
+            logger.debug(f"Propagated dual continuum states for dt={dt:.6f}")
+            
+            return matter_new, antimatter_new
+            
+        except Exception as e:
+            logger.error(f"Dual continuum propagation failed: {str(e)}")
+            raise
+    
+    def get_dual_kernel(self, x1: float, x2: float) -> Tuple[complex, complex]:
+        """
+        Calculate the dual continuum propagator kernels between two points.
+        
+        Args:
+            x1: First spatial point
+            x2: Second spatial point
+            
+        Returns:
+            Tuple of matter and antimatter kernels
+        """
+        key = (x1, x2)
+        if key not in self._kernel_cache:
+            # Calculate standard kernel
+            base_kernel = self.get_kernel(x1, x2)
+            
+            # Add dual continuum corrections
+            matter_kernel = base_kernel * np.exp(-INFORMATION_GENERATION_RATE * abs(x1 - x2))
+            antimatter_kernel = base_kernel
+            
+            self._kernel_cache[key] = (matter_kernel, antimatter_kernel)
             
         return self._kernel_cache[key]

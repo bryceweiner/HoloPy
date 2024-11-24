@@ -1,174 +1,211 @@
 """
-Metrics collection module for holographic simulation measurements.
+Metrics collection system for holographic simulation.
 """
-from dataclasses import dataclass
-import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, List, Tuple
 import numpy as np
 import pandas as pd
+from dataclasses import dataclass
+import logging
 from ..config.constants import (
     INFORMATION_GENERATION_RATE,
     PLANCK_CONSTANT,
-    CRITICAL_THRESHOLD
+    SPEED_OF_LIGHT,
+    COUPLING_CONSTANT
 )
-import logging
-from ..core.classical_states import ContinuumState
+from .validation_suite import HolographicValidationSuite
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class StateMetrics:
-    """Container for quantum state metrics."""
+    """Container for comprehensive state metrics."""
     time: float
-    coherence: float
+    density: float
+    temperature: float
     entropy: float
     information_content: float
-    integration_measure: float
+    coherence: float
     energy: float
+    processing_rate: float
+    stability_measure: float
+    phase: float
+    entanglement: float
+    information_flow: float
+    coupling_strength: float
 
 class MetricsCollector:
-    """Collects and manages metrics from holographic simulation."""
+    """Collects and processes metrics from quantum and classical states."""
     
-    def __init__(self, cache_size: int = 1000):
-        """Initialize metrics collector."""
-        self.cache_size = cache_size
+    def __init__(self, validation_suite: Optional[HolographicValidationSuite] = None):
         self.metrics_history: List[StateMetrics] = []
-        self.performance_metrics: Dict[str, List[float]] = {
-            'computation_time': [],
-            'memory_usage': [],
-            'cache_hits': [],
-            'cache_misses': []
-        }
-        
-        logger.info(f"Initialized MetricsCollector with cache_size={cache_size}")
+        self.validation_suite = validation_suite or HolographicValidationSuite()
+        self._initialize_tracking()
+        logger.info("Initialized MetricsCollector")
+    
+    def _initialize_tracking(self) -> None:
+        """Initialize metrics tracking structures."""
+        try:
+            self.tracking_df = pd.DataFrame(columns=[
+                'time',
+                'density',
+                'temperature',
+                'entropy',
+                'information_content',
+                'coherence',
+                'energy',
+                'processing_rate',
+                'stability_measure',
+                'phase',
+                'entanglement',
+                'information_flow',
+                'coupling_strength'
+            ])
+            
+            logger.debug("Initialized metrics tracking")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize metrics tracking: {str(e)}")
+            raise
     
     def collect_state_metrics(
         self,
-        state: np.ndarray,
+        wavefunction: np.ndarray,
         time: float,
-        density_matrix: Optional[np.ndarray] = None
+        classical_state: Optional[Dict] = None
     ) -> StateMetrics:
         """
-        Collect metrics from current quantum state.
+        Collect comprehensive metrics from quantum and classical states.
         
         Args:
-            state: Current quantum state vector
+            wavefunction: Quantum state vector
             time: Current simulation time
-            density_matrix: Optional density matrix for mixed states
+            classical_state: Optional classical observables
+            
+        Returns:
+            StateMetrics containing collected metrics
         """
-        # Calculate coherence
-        coherence = self._calculate_coherence(state, time)
-        
-        # Calculate von Neumann entropy with holographic corrections
-        entropy = self._calculate_entropy(
-            density_matrix if density_matrix is not None 
-            else np.outer(state, state.conj())
-        )
-        
-        # Calculate information content
-        info_content = self._calculate_information_content(state)
-        
-        # Calculate integration measure (Φ)
-        integration = self._calculate_integration_measure(state)
-        
-        # Calculate energy
-        energy = self._calculate_energy(state)
-        
-        metrics = StateMetrics(
-            time=time,
-            coherence=coherence,
-            entropy=entropy,
-            information_content=info_content,
-            integration_measure=integration,
-            energy=energy
-        )
-        
-        self._store_metrics(metrics)
-        return metrics
+        try:
+            # Calculate quantum metrics
+            density = np.abs(wavefunction)**2
+            phase = np.angle(np.sum(wavefunction))
+            energy = self._calculate_energy(wavefunction)
+            
+            # Calculate information measures
+            entropy = self._calculate_entropy(density)
+            information = -np.sum(density * np.log2(density + 1e-10))
+            
+            # Calculate coherence and stability
+            coherence = self._calculate_coherence(wavefunction)
+            stability = np.abs(np.vdot(wavefunction, wavefunction))
+            
+            # Include classical observables if provided
+            temperature = classical_state.get('temperature', 0.0) if classical_state else 0.0
+            coupling = classical_state.get('coupling_strength', 0.0) if classical_state else 0.0
+            
+            metrics = StateMetrics(
+                time=time,
+                density=np.sum(density),
+                temperature=temperature,
+                entropy=entropy,
+                information_content=information,
+                coherence=coherence,
+                energy=energy,
+                processing_rate=INFORMATION_GENERATION_RATE,
+                stability_measure=stability,
+                phase=phase,
+                entanglement=self._calculate_entanglement(wavefunction),
+                information_flow=INFORMATION_GENERATION_RATE * entropy,
+                coupling_strength=coupling
+            )
+            
+            # Update tracking
+            self.metrics_history.append(metrics)
+            self._update_tracking_df(metrics)
+            
+            logger.debug(f"Collected metrics at t={time:.6f}")
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Metrics collection failed: {str(e)}")
+            raise
     
-    def _calculate_coherence(self, state: np.ndarray, time: float) -> float:
-        """Calculate quantum coherence with holographic corrections."""
-        # Implementation based on equation from math.tex:2730-2731
-        return float(np.abs(np.vdot(state, state)) * np.exp(-INFORMATION_GENERATION_RATE * time))
+    def _calculate_energy(self, wavefunction: np.ndarray) -> float:
+        """Calculate total energy with holographic corrections."""
+        try:
+            # Calculate kinetic energy in momentum space
+            psi_k = np.fft.fft(wavefunction)
+            k = 2 * np.pi * np.fft.fftfreq(len(wavefunction))
+            kinetic = np.sum(np.abs(psi_k)**2 * k**2) / 2
+            
+            # Calculate potential energy with corrections
+            density = np.abs(wavefunction)**2
+            potential = COUPLING_CONSTANT * np.sum(density * np.arange(len(density))**2)
+            
+            # Add holographic correction
+            correction = INFORMATION_GENERATION_RATE * np.sum(
+                density * np.log(density + 1e-10)
+            ) / (4 * np.pi)
+            
+            return kinetic + potential + correction
+            
+        except Exception as e:
+            logger.error(f"Energy calculation failed: {str(e)}")
+            raise
     
-    def _calculate_entropy(self, density_matrix: np.ndarray) -> float:
-        """Calculate von Neumann entropy with holographic corrections."""
-        # Implementation based on equation from math.tex:4907-4909
-        eigenvalues = np.linalg.eigvalsh(density_matrix)
-        entropy = 0.0
-        for eig in eigenvalues:
-            if eig > 1e-10:  # Numerical threshold
-                entropy -= eig * np.log2(eig)
-        return entropy * np.exp(-INFORMATION_GENERATION_RATE * time)
+    def _calculate_entropy(self, density: np.ndarray) -> float:
+        """Calculate von Neumann entropy with holographic bound."""
+        try:
+            entropy = -np.sum(density * np.log(density + 1e-10))
+            max_entropy = np.log(len(density))
+            
+            return min(entropy, max_entropy)
+            
+        except Exception as e:
+            logger.error(f"Entropy calculation failed: {str(e)}")
+            raise
     
-    def _calculate_information_content(self, state: np.ndarray) -> float:
-        """Calculate total information content."""
-        # Implementation based on equation from math.tex:4914-4915
-        return -np.sum(np.abs(state)**2 * np.log2(np.abs(state)**2 + 1e-10))
+    def _calculate_coherence(self, wavefunction: np.ndarray) -> float:
+        """Calculate quantum coherence measure."""
+        try:
+            # Calculate off-diagonal elements of density matrix
+            density_matrix = np.outer(wavefunction, np.conj(wavefunction))
+            coherence = np.sum(np.abs(density_matrix - np.diag(np.diag(density_matrix))))
+            
+            return coherence
+            
+        except Exception as e:
+            logger.error(f"Coherence calculation failed: {str(e)}")
+            raise
     
-    def _calculate_integration_measure(self, state: np.ndarray) -> float:
-        """Calculate integration measure Φ."""
-        # Implementation based on equation from knowledgebase/knowledgebase.md:133
-        rho = np.outer(state, state.conj())
-        size = len(state)
-        phi = 0.0
-        
-        for i in range(size):
-            for j in range(size):
-                if rho[i,j] > 1e-10:
-                    phi -= rho[i,j] * np.log2(rho[i,j])
-                    
-        return phi
+    def _calculate_entanglement(self, wavefunction: np.ndarray) -> float:
+        """Calculate entanglement entropy for bipartite split."""
+        try:
+            # Reshape for bipartite split
+            n = len(wavefunction)
+            mid = n // 2
+            rho = np.outer(wavefunction, np.conj(wavefunction))
+            
+            # Calculate reduced density matrix
+            rho_a = np.trace(rho.reshape(mid, n//mid, mid, n//mid), axis1=1, axis2=3)
+            
+            # Calculate entanglement entropy
+            eigs = np.linalg.eigvalsh(rho_a)
+            eigs = eigs[eigs > 1e-10]
+            return -np.sum(eigs * np.log2(eigs))
+            
+        except Exception as e:
+            logger.error(f"Entanglement calculation failed: {str(e)}")
+            raise
     
-    def _calculate_energy(self, state: np.ndarray) -> float:
-        """Calculate energy expectation value."""
-        # Implementation based on equation from math.tex:2721-2723
-        k = np.fft.fftfreq(len(state))
-        psi_k = np.fft.fft(state)
-        energy = np.sum(
-            (k**2 + 1j * INFORMATION_GENERATION_RATE * k) 
-            * np.abs(psi_k)**2
-        )
-        return float(np.real(energy))
-    
-    def _store_metrics(self, metrics: StateMetrics) -> None:
-        """Store metrics in history with cache management."""
-        self.metrics_history.append(metrics)
-        if len(self.metrics_history) > self.cache_size:
-            self.metrics_history.pop(0)
-    
-    def get_metrics_dataframe(self) -> pd.DataFrame:
-        """Convert metrics history to pandas DataFrame."""
-        return pd.DataFrame([vars(m) for m in self.metrics_history])
-    
-    def record_performance_metric(
-        self,
-        metric_type: str,
-        value: float
-    ) -> None:
-        """Record a performance metric."""
-        if metric_type in self.performance_metrics:
-            self.performance_metrics[metric_type].append(value)
-            if len(self.performance_metrics[metric_type]) > self.cache_size:
-                self.performance_metrics[metric_type].pop(0) 
-    
-    def collect_classical_metrics(
-        self,
-        classical_state: ContinuumState
-    ) -> None:
-        """Collect metrics for classical observables."""
-        metrics = {
-            'temperature': classical_state.temperature,
-            'classical_entropy': classical_state.entropy,
-            'density_mean': np.mean(classical_state.density),
-            'density_std': np.std(classical_state.density)
-        }
-        
-        self.classical_metrics_history.append(metrics)
-        
-        # Log metrics
-        logger.info(
-            f"Classical metrics at t={classical_state.time:.2e}: "
-            f"T={metrics['temperature']:.2e}, "
-            f"S={metrics['classical_entropy']:.2e}"
-        )
+    def _update_tracking_df(self, metrics: StateMetrics) -> None:
+        """Update metrics tracking DataFrame."""
+        try:
+            self.tracking_df = pd.concat([
+                self.tracking_df,
+                pd.DataFrame([vars(metrics)])
+            ], ignore_index=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to update tracking DataFrame: {str(e)}")
+            raise

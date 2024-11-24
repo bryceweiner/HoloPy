@@ -11,6 +11,9 @@ import zlib
 import lz4.frame
 import blosc
 from enum import Enum
+
+from holopy.utils.recovery import RecoverySystem
+from holopy.utils.version_control import VersionControl
 from ..config.constants import INFORMATION_GENERATION_RATE
 
 logger = logging.getLogger(__name__)

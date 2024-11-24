@@ -2,6 +2,7 @@
 Constants module for the holographic universe simulation.
 Contains fundamental physical constants and derived parameters.
 """
+from dataclasses import dataclass
 import numpy as np
 
 # Fundamental Constants
