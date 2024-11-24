@@ -2,7 +2,6 @@
 State persistence system implementing holographic serialization and recovery.
 """
 import h5py
-import json
 import numpy as np
 import logging
 from pathlib import Path
