@@ -6,8 +6,12 @@ import matplotlib.pyplot as plt
 from typing import List, Optional, Tuple
 from pathlib import Path
 import seaborn as sns
+import pandas as pd
 from ..metrics.collectors import StateMetrics
 from ..config.constants import INFORMATION_GENERATION_RATE
+import logging
+
+logger = logging.getLogger(__name__)
 
 class HolographicVisualizer:
     """Visualization tools for holographic states and metrics."""
@@ -94,4 +98,85 @@ class HolographicVisualizer:
         
         if save:
             plt.savefig(self.output_dir / "metrics_summary.png")
-        plt.close() 
+        plt.close()
+    
+    def plot_dual_continuum_state(
+        self,
+        matter_wavefunction: np.ndarray,
+        antimatter_wavefunction: np.ndarray,
+        time: float,
+        save_path: Optional[Path] = None
+    ) -> plt.Figure:
+        """Plot dual continuum state visualization."""
+        try:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+            
+            # Matter wavefunction
+            axes[0,0].plot(self.x, np.abs(matter_wavefunction)**2)
+            axes[0,0].set_title('Matter Density')
+            
+            # Antimatter wavefunction
+            axes[0,1].plot(self.x, np.abs(antimatter_wavefunction)**2)
+            axes[0,1].set_title('Antimatter Density')
+            
+            # Phase relationship
+            phase_diff = np.angle(matter_wavefunction) - np.angle(antimatter_wavefunction)
+            axes[1,0].plot(self.x, phase_diff)
+            axes[1,0].set_title('Phase Difference')
+            
+            # Coupling strength
+            coupling = np.abs(matter_wavefunction * np.conj(antimatter_wavefunction))
+            axes[1,1].plot(self.x, coupling)
+            axes[1,1].set_title('Local Coupling Strength')
+            
+            plt.suptitle(f't = {time:.3f}')
+            
+            if save_path:
+                fig.savefig(save_path)
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"Visualization failed: {str(e)}")
+            raise
+            
+    def plot_metrics_evolution(
+        self,
+        metrics_df: pd.DataFrame,
+        save_path: Optional[Path] = None
+    ) -> plt.Figure:
+        """Plot evolution of key metrics."""
+        try:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+            
+            # Information content decay
+            axes[0,0].plot(metrics_df.time, metrics_df.information_content)
+            axes[0,0].set_title('Information Content')
+            axes[0,0].set_yscale('log')
+            
+            # Coherence hierarchy
+            for i in range(3):
+                axes[0,1].plot(
+                    metrics_df.time,
+                    metrics_df[f'coherence_level_{i}'],
+                    label=f'Level {i}'
+                )
+            axes[0,1].set_title('Coherence Hierarchy')
+            axes[0,1].legend()
+            
+            # Coupling strength
+            axes[1,0].plot(metrics_df.time, metrics_df.coupling_strength)
+            axes[1,0].set_title('Coupling Strength')
+            
+            # Temperature evolution
+            axes[1,1].plot(metrics_df.time, metrics_df.temperature)
+            axes[1,1].set_title('Temperature')
+            
+            if save_path:
+                fig.savefig(save_path)
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"Metrics visualization failed: {str(e)}")
+            raise 

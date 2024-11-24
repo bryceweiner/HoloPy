@@ -1,207 +1,268 @@
-"""
-Validation suite for holographic system constraints and conservation laws.
-"""
-from typing import Dict, Optional, List
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-import logging
 from ..config.constants import (
     INFORMATION_GENERATION_RATE,
-    PLANCK_CONSTANT,
-    SPEED_OF_LIGHT,
-    COUPLING_CONSTANT
+    COUPLING_CONSTANT,
+    PLANCK_LENGTH,
+    LIGHT_SPEED,
+    CRITICAL_THRESHOLD
 )
+import logging
 
 logger = logging.getLogger(__name__)
 
 @dataclass
-class ValidationMetrics:
-    """Container for validation metrics."""
-    information_conservation: float
-    energy_conservation: float
-    holographic_bound: float
-    coherence_decay: float
-    antimatter_preservation: float
-    phase_space_volume: float
+class ValidationResult:
+    """Stores validation check results."""
+    passed: bool
+    error: float
+    message: str
+    details: Dict[str, float]
 
 class HolographicValidationSuite:
-    """Implements validation checks for holographic constraints."""
+    """Comprehensive validation suite for holographic system constraints."""
     
-    def __init__(self):
-        self.validation_history: List[ValidationMetrics] = []
-        logger.info("Initialized HolographicValidationSuite")
+    def __init__(self, tolerance: float = 1e-6):
+        self.tolerance = tolerance
+        self.validation_history: List[Dict[str, ValidationResult]] = []
+        logger.info(f"Initialized validation suite with tolerance {tolerance}")
     
-    def validate_evolution(
+    def validate_state(
+        self,
+        matter_wavefunction: np.ndarray,
+        antimatter_wavefunction: np.ndarray,
+        metrics_df: pd.DataFrame,
+        dt: float
+    ) -> Dict[str, ValidationResult]:
+        """Perform comprehensive state validation."""
+        try:
+            results = {}
+            
+            # Information bound validation
+            results['information_bound'] = self._validate_information_bound(
+                matter_wavefunction,
+                metrics_df
+            )
+            
+            # Energy conservation
+            results['energy_conservation'] = self._validate_energy_conservation(
+                metrics_df,
+                dt
+            )
+            
+            # Holographic decay
+            results['holographic_decay'] = self._validate_holographic_decay(
+                metrics_df,
+                dt
+            )
+            
+            # Antimatter coherence
+            results['antimatter_coherence'] = self._validate_antimatter_coherence(
+                antimatter_wavefunction
+            )
+            
+            # Cross-continuum coupling
+            results['coupling_strength'] = self._validate_coupling_strength(
+                matter_wavefunction,
+                antimatter_wavefunction
+            )
+            
+            # Store validation results
+            self.validation_history.append(results)
+            
+            # Log validation summary
+            self._log_validation_summary(results)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Validation failed: {str(e)}")
+            raise
+    
+    def _validate_information_bound(
+        self,
+        wavefunction: np.ndarray,
+        metrics_df: pd.DataFrame
+    ) -> ValidationResult:
+        """Validate holographic information bounds."""
+        try:
+            # Calculate current information content
+            density = np.abs(wavefunction)**2
+            information = -np.sum(density * np.log2(density + 1e-10))
+            
+            # Calculate maximum allowed information
+            max_info = len(wavefunction)  # Holographic bound
+            
+            # Check bound
+            error = max(0, information - max_info)
+            passed = error < self.tolerance
+            
+            return ValidationResult(
+                passed=passed,
+                error=error,
+                message=f"Information bound {'satisfied' if passed else 'violated'}",
+                details={
+                    'current_information': information,
+                    'max_information': max_info,
+                    'margin': max_info - information
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Information bound validation failed: {str(e)}")
+            raise
+    
+    def _validate_energy_conservation(
         self,
         metrics_df: pd.DataFrame,
-        dt: float,
-        total_time: float
-    ) -> ValidationMetrics:
-        """
-        Validate complete evolution cycle against holographic constraints.
-        
-        Args:
-            metrics_df: DataFrame containing evolution metrics
-            dt: Time step used in evolution
-            total_time: Total evolution time
-            
-        Returns:
-            ValidationMetrics containing validation results
-        """
-        try:
-            # Validate information conservation with decay
-            info_conservation = self._check_information_conservation(
-                metrics_df.information_content.values,
-                dt,
-                total_time
-            )
-            
-            # Validate energy conservation with holographic corrections
-            energy_conservation = self._check_energy_conservation(
-                metrics_df.energy.values,
-                metrics_df.time.values
-            )
-            
-            # Check holographic bound
-            holographic_bound = self._check_holographic_bound(
-                metrics_df.entropy.values,
-                metrics_df.information_content.values
-            )
-            
-            # Validate coherence decay
-            coherence_decay = self._check_coherence_decay(
-                metrics_df.coherence.values,
-                metrics_df.time.values
-            )
-            
-            # Check antimatter preservation
-            antimatter_preservation = self._check_antimatter_preservation(
-                metrics_df.stability_measure.values
-            )
-            
-            # Validate phase space constraints
-            phase_space = self._check_phase_space_volume(
-                metrics_df.density.values,
-                metrics_df.entropy.values
-            )
-            
-            metrics = ValidationMetrics(
-                information_conservation=info_conservation,
-                energy_conservation=energy_conservation,
-                holographic_bound=holographic_bound,
-                coherence_decay=coherence_decay,
-                antimatter_preservation=antimatter_preservation,
-                phase_space_volume=phase_space
-            )
-            
-            self.validation_history.append(metrics)
-            logger.info("Completed evolution validation")
-            
-            return metrics
-            
-        except Exception as e:
-            logger.error(f"Evolution validation failed: {str(e)}")
-            raise
-    
-    def _check_information_conservation(
-        self,
-        information: np.ndarray,
-        dt: float,
-        total_time: float
-    ) -> float:
-        """Validate information conservation with holographic decay."""
-        try:
-            initial_info = information[0]
-            final_info = information[-1]
-            expected_info = initial_info * np.exp(-INFORMATION_GENERATION_RATE * total_time)
-            
-            return np.abs(final_info - expected_info) / initial_info
-            
-        except Exception as e:
-            logger.error(f"Information conservation check failed: {str(e)}")
-            raise
-    
-    def _check_energy_conservation(
-        self,
-        energy: np.ndarray,
-        times: np.ndarray
-    ) -> float:
+        dt: float
+    ) -> ValidationResult:
         """Validate energy conservation with holographic corrections."""
         try:
-            # Calculate expected energy evolution
-            initial_energy = energy[0]
-            expected = initial_energy * np.exp(-INFORMATION_GENERATION_RATE * times)
+            if len(metrics_df) < 2:
+                return ValidationResult(
+                    passed=True,
+                    error=0.0,
+                    message="Insufficient data for energy validation",
+                    details={'time_steps': len(metrics_df)}
+                )
             
-            # Calculate relative error
-            error = np.max(np.abs(energy - expected) / initial_energy)
-            return error
+            # Get energy values
+            initial_energy = metrics_df['energy'].iloc[0]
+            current_energy = metrics_df['energy'].iloc[-1]
+            time_elapsed = metrics_df['time'].iloc[-1]
+            
+            # Calculate expected decay
+            expected_energy = initial_energy * np.exp(-INFORMATION_GENERATION_RATE * time_elapsed)
+            
+            # Calculate error
+            error = np.abs(current_energy - expected_energy) / initial_energy
+            passed = error < self.tolerance
+            
+            return ValidationResult(
+                passed=passed,
+                error=error,
+                message=f"Energy conservation {'satisfied' if passed else 'violated'}",
+                details={
+                    'initial_energy': initial_energy,
+                    'current_energy': current_energy,
+                    'expected_energy': expected_energy,
+                    'relative_error': error
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Energy conservation check failed: {str(e)}")
+            logger.error(f"Energy conservation validation failed: {str(e)}")
             raise
     
-    def _check_holographic_bound(
+    def _validate_holographic_decay(
         self,
-        entropy: np.ndarray,
-        information: np.ndarray
-    ) -> float:
-        """Validate holographic entropy bound."""
+        metrics_df: pd.DataFrame,
+        dt: float
+    ) -> ValidationResult:
+        """Validate holographic decay rates."""
         try:
-            # Calculate maximum allowed information
-            max_info = entropy * np.log(2) / PLANCK_CONSTANT
+            if len(metrics_df) < 2:
+                return ValidationResult(
+                    passed=True,
+                    error=0.0,
+                    message="Insufficient data for decay validation",
+                    details={'time_steps': len(metrics_df)}
+                )
             
-            # Check if information content respects bound
-            violation = np.maximum(0, information - max_info)
-            return np.max(violation) / np.mean(max_info)
+            # Calculate coherence decay rate
+            coherence = metrics_df['coherence'].values
+            times = metrics_df['time'].values
+            
+            # Fit exponential decay
+            log_coherence = np.log(coherence + 1e-10)
+            decay_rate = np.polyfit(times, log_coherence, 1)[0]
+            
+            # Compare with expected rate
+            error = np.abs(decay_rate + INFORMATION_GENERATION_RATE) / INFORMATION_GENERATION_RATE
+            passed = error < self.tolerance
+            
+            return ValidationResult(
+                passed=passed,
+                error=error,
+                message=f"Holographic decay {'satisfied' if passed else 'violated'}",
+                details={
+                    'measured_rate': -decay_rate,
+                    'expected_rate': INFORMATION_GENERATION_RATE,
+                    'relative_error': error
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Holographic bound check failed: {str(e)}")
+            logger.error(f"Holographic decay validation failed: {str(e)}")
             raise
     
-    def _check_coherence_decay(
+    def _validate_antimatter_coherence(
         self,
-        coherence: np.ndarray,
-        times: np.ndarray
-    ) -> float:
-        """Validate matter-antimatter coherence decay."""
+        antimatter_wavefunction: np.ndarray
+    ) -> ValidationResult:
+        """Validate antimatter coherence preservation."""
         try:
-            initial_coherence = coherence[0]
-            expected = initial_coherence * np.exp(-INFORMATION_GENERATION_RATE * times)
+            # Calculate norm
+            norm = np.sum(np.abs(antimatter_wavefunction)**2)
+            error = np.abs(norm - 1.0)
+            passed = error < self.tolerance
             
-            error = np.max(np.abs(coherence - expected) / initial_coherence)
-            return error
+            return ValidationResult(
+                passed=passed,
+                error=error,
+                message=f"Antimatter coherence {'preserved' if passed else 'violated'}",
+                details={
+                    'norm': norm,
+                    'deviation': error
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Coherence decay check failed: {str(e)}")
+            logger.error(f"Antimatter coherence validation failed: {str(e)}")
             raise
     
-    def _check_antimatter_preservation(
+    def _validate_coupling_strength(
         self,
-        stability: np.ndarray
-    ) -> float:
-        """Validate antimatter state preservation."""
+        matter_wavefunction: np.ndarray,
+        antimatter_wavefunction: np.ndarray
+    ) -> ValidationResult:
+        """Validate cross-continuum coupling strength."""
         try:
-            # Check normalization preservation
-            return np.max(np.abs(stability - 1.0))
+            # Calculate coupling
+            coupling = np.abs(np.vdot(matter_wavefunction, antimatter_wavefunction))
+            
+            # Check coupling bounds
+            error = max(0, coupling - COUPLING_CONSTANT)
+            passed = error < self.tolerance
+            
+            return ValidationResult(
+                passed=passed,
+                error=error,
+                message=f"Coupling strength {'valid' if passed else 'excessive'}",
+                details={
+                    'coupling': coupling,
+                    'max_allowed': COUPLING_CONSTANT,
+                    'margin': COUPLING_CONSTANT - coupling
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Antimatter preservation check failed: {str(e)}")
+            logger.error(f"Coupling strength validation failed: {str(e)}")
             raise
     
-    def _check_phase_space_volume(
-        self,
-        density: np.ndarray,
-        entropy: np.ndarray
-    ) -> float:
-        """Validate phase space volume constraints."""
-        try:
-            # Calculate effective phase space volume
-            volume = np.sum(density * np.log(density + 1e-10))
-            max_volume = np.exp(np.max(entropy))
-            
-            return np.abs(volume) / max_volume
-            
-        except Exception as e:
-            logger.error(f"Phase space volume check failed: {str(e)}")
-            raise
+    def _log_validation_summary(self, results: Dict[str, ValidationResult]) -> None:
+        """Log summary of validation results."""
+        failed_checks = [
+            name for name, result in results.items() 
+            if not result.passed
+        ]
+        
+        if failed_checks:
+            logger.warning(
+                f"Validation failed for: {', '.join(failed_checks)}"
+            )
+        else:
+            logger.info("All validation checks passed")

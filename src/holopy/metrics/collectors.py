@@ -13,6 +13,14 @@ from ..config.constants import (
     COUPLING_CONSTANT
 )
 from .validation_suite import HolographicValidationSuite
+import matplotlib.pyplot as plt
+from pathlib import Path
+import seaborn as sns
+from ..config.constants import (
+    INFORMATION_GENERATION_RATE,
+    COUPLING_CONSTANT,
+    CRITICAL_THRESHOLD
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,179 +41,237 @@ class StateMetrics:
     information_flow: float
     coupling_strength: float
 
+@dataclass
+class SystemState:
+    """Snapshot of system state at a point in time."""
+    time: float
+    matter_density: np.ndarray
+    antimatter_density: np.ndarray
+    coherence: float
+    energy: float
+    information_content: float
+    hierarchy_metrics: Dict[str, float]
+    validation_metrics: Dict[str, float]
+
 class MetricsCollector:
-    """Collects and processes metrics from quantum and classical states."""
+    """Comprehensive metrics collection and analysis system."""
     
-    def __init__(self, validation_suite: Optional[HolographicValidationSuite] = None):
-        self.metrics_history: List[StateMetrics] = []
-        self.validation_suite = validation_suite or HolographicValidationSuite()
-        self._initialize_tracking()
-        logger.info("Initialized MetricsCollector")
-    
-    def _initialize_tracking(self) -> None:
-        """Initialize metrics tracking structures."""
-        try:
-            self.tracking_df = pd.DataFrame(columns=[
-                'time',
-                'density',
-                'temperature',
-                'entropy',
-                'information_content',
-                'coherence',
-                'energy',
-                'processing_rate',
-                'stability_measure',
-                'phase',
-                'entanglement',
-                'information_flow',
-                'coupling_strength'
-            ])
-            
-            logger.debug("Initialized metrics tracking")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize metrics tracking: {str(e)}")
-            raise
-    
-    def collect_state_metrics(
+    def __init__(
         self,
-        wavefunction: np.ndarray,
-        time: float,
-        classical_state: Optional[Dict] = None
-    ) -> StateMetrics:
-        """
-        Collect comprehensive metrics from quantum and classical states.
+        output_dir: Optional[Path] = None,
+        cache_size: int = 1000
+    ):
+        self.output_dir = output_dir or Path("metrics")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        Args:
-            wavefunction: Quantum state vector
-            time: Current simulation time
-            classical_state: Optional classical observables
-            
-        Returns:
-            StateMetrics containing collected metrics
-        """
+        self.cache_size = cache_size
+        self.state_history: List[SystemState] = []
+        self.metrics_df = pd.DataFrame()
+        
+        # Initialize plot styling
+        plt.style.use('seaborn')
+        sns.set_palette("husl")
+        
+        logger.info(f"Initialized MetricsCollector with cache_size={cache_size}")
+    
+    def collect_state(
+        self,
+        time: float,
+        matter_wavefunction: np.ndarray,
+        antimatter_wavefunction: np.ndarray,
+        hierarchy_metrics: Dict[str, float],
+        validation_metrics: Dict[str, float]
+    ) -> None:
+        """Collect and store system state."""
         try:
-            # Calculate quantum metrics
-            density = np.abs(wavefunction)**2
-            phase = np.angle(np.sum(wavefunction))
-            energy = self._calculate_energy(wavefunction)
+            # Calculate state metrics
+            matter_density = np.abs(matter_wavefunction)**2
+            antimatter_density = np.abs(antimatter_wavefunction)**2
             
-            # Calculate information measures
-            entropy = self._calculate_entropy(density)
-            information = -np.sum(density * np.log2(density + 1e-10))
+            coherence = np.abs(np.vdot(matter_wavefunction, antimatter_wavefunction))
+            energy = np.sum(np.abs(np.fft.fft(matter_wavefunction))**2)
+            information = -np.sum(matter_density * np.log2(matter_density + 1e-10))
             
-            # Calculate coherence and stability
-            coherence = self._calculate_coherence(wavefunction)
-            stability = np.abs(np.vdot(wavefunction, wavefunction))
-            
-            # Include classical observables if provided
-            temperature = classical_state.get('temperature', 0.0) if classical_state else 0.0
-            coupling = classical_state.get('coupling_strength', 0.0) if classical_state else 0.0
-            
-            metrics = StateMetrics(
+            # Create state snapshot
+            state = SystemState(
                 time=time,
-                density=np.sum(density),
-                temperature=temperature,
-                entropy=entropy,
-                information_content=information,
+                matter_density=matter_density,
+                antimatter_density=antimatter_density,
                 coherence=coherence,
                 energy=energy,
-                processing_rate=INFORMATION_GENERATION_RATE,
-                stability_measure=stability,
-                phase=phase,
-                entanglement=self._calculate_entanglement(wavefunction),
-                information_flow=INFORMATION_GENERATION_RATE * entropy,
-                coupling_strength=coupling
+                information_content=information,
+                hierarchy_metrics=hierarchy_metrics,
+                validation_metrics=validation_metrics
             )
             
-            # Update tracking
-            self.metrics_history.append(metrics)
-            self._update_tracking_df(metrics)
+            # Add to history
+            self.state_history.append(state)
             
-            logger.debug(f"Collected metrics at t={time:.6f}")
+            # Maintain cache size
+            if len(self.state_history) > self.cache_size:
+                self.state_history.pop(0)
             
-            return metrics
+            # Update metrics DataFrame
+            self._update_metrics_df(state)
             
-        except Exception as e:
-            logger.error(f"Metrics collection failed: {str(e)}")
-            raise
-    
-    def _calculate_energy(self, wavefunction: np.ndarray) -> float:
-        """Calculate total energy with holographic corrections."""
-        try:
-            # Calculate kinetic energy in momentum space
-            psi_k = np.fft.fft(wavefunction)
-            k = 2 * np.pi * np.fft.fftfreq(len(wavefunction))
-            kinetic = np.sum(np.abs(psi_k)**2 * k**2) / 2
-            
-            # Calculate potential energy with corrections
-            density = np.abs(wavefunction)**2
-            potential = COUPLING_CONSTANT * np.sum(density * np.arange(len(density))**2)
-            
-            # Add holographic correction
-            correction = INFORMATION_GENERATION_RATE * np.sum(
-                density * np.log(density + 1e-10)
-            ) / (4 * np.pi)
-            
-            return kinetic + potential + correction
+            logger.debug(f"Collected state at t={time:.6f}")
             
         except Exception as e:
-            logger.error(f"Energy calculation failed: {str(e)}")
+            logger.error(f"State collection failed: {str(e)}")
             raise
     
-    def _calculate_entropy(self, density: np.ndarray) -> float:
-        """Calculate von Neumann entropy with holographic bound."""
+    def _update_metrics_df(self, state: SystemState) -> None:
+        """Update metrics DataFrame with new state."""
         try:
-            entropy = -np.sum(density * np.log(density + 1e-10))
-            max_entropy = np.log(len(density))
+            # Create metrics dictionary
+            metrics = {
+                'time': state.time,
+                'coherence': state.coherence,
+                'energy': state.energy,
+                'information_content': state.information_content
+            }
             
-            return min(entropy, max_entropy)
+            # Add hierarchy metrics
+            metrics.update({
+                f"hierarchy_{k}": v
+                for k, v in state.hierarchy_metrics.items()
+            })
             
-        except Exception as e:
-            logger.error(f"Entropy calculation failed: {str(e)}")
-            raise
-    
-    def _calculate_coherence(self, wavefunction: np.ndarray) -> float:
-        """Calculate quantum coherence measure."""
-        try:
-            # Calculate off-diagonal elements of density matrix
-            density_matrix = np.outer(wavefunction, np.conj(wavefunction))
-            coherence = np.sum(np.abs(density_matrix - np.diag(np.diag(density_matrix))))
+            # Add validation metrics
+            metrics.update({
+                f"validation_{k}": v
+                for k, v in state.validation_metrics.items()
+            })
             
-            return coherence
-            
-        except Exception as e:
-            logger.error(f"Coherence calculation failed: {str(e)}")
-            raise
-    
-    def _calculate_entanglement(self, wavefunction: np.ndarray) -> float:
-        """Calculate entanglement entropy for bipartite split."""
-        try:
-            # Reshape for bipartite split
-            n = len(wavefunction)
-            mid = n // 2
-            rho = np.outer(wavefunction, np.conj(wavefunction))
-            
-            # Calculate reduced density matrix
-            rho_a = np.trace(rho.reshape(mid, n//mid, mid, n//mid), axis1=1, axis2=3)
-            
-            # Calculate entanglement entropy
-            eigs = np.linalg.eigvalsh(rho_a)
-            eigs = eigs[eigs > 1e-10]
-            return -np.sum(eigs * np.log2(eigs))
-            
-        except Exception as e:
-            logger.error(f"Entanglement calculation failed: {str(e)}")
-            raise
-    
-    def _update_tracking_df(self, metrics: StateMetrics) -> None:
-        """Update metrics tracking DataFrame."""
-        try:
-            self.tracking_df = pd.concat([
-                self.tracking_df,
-                pd.DataFrame([vars(metrics)])
+            # Append to DataFrame
+            self.metrics_df = pd.concat([
+                self.metrics_df,
+                pd.DataFrame([metrics])
             ], ignore_index=True)
             
         except Exception as e:
-            logger.error(f"Failed to update tracking DataFrame: {str(e)}")
+            logger.error(f"Metrics update failed: {str(e)}")
+            raise
+    
+    def generate_report(self, save: bool = True) -> Dict[str, plt.Figure]:
+        """Generate comprehensive analysis report."""
+        try:
+            figures = {}
+            
+            # Evolution plots
+            figures['evolution'] = self._plot_evolution_metrics()
+            
+            # Hierarchy analysis
+            figures['hierarchy'] = self._plot_hierarchy_analysis()
+            
+            # Validation summary
+            figures['validation'] = self._plot_validation_summary()
+            
+            # Phase space analysis
+            figures['phase_space'] = self._plot_phase_space()
+            
+            if save:
+                self._save_figures(figures)
+            
+            return figures
+            
+        except Exception as e:
+            logger.error(f"Report generation failed: {str(e)}")
+            raise
+    
+    def _plot_evolution_metrics(self) -> plt.Figure:
+        """Plot core evolution metrics."""
+        try:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            
+            # Coherence evolution
+            axes[0,0].plot(
+                self.metrics_df['time'],
+                self.metrics_df['coherence'],
+                label='Measured'
+            )
+            axes[0,0].set_title('Coherence Evolution')
+            axes[0,0].set_xlabel('Time')
+            axes[0,0].set_ylabel('Coherence')
+            axes[0,0].legend()
+            
+            # Energy evolution
+            axes[0,1].plot(
+                self.metrics_df['time'],
+                self.metrics_df['energy'],
+                label='Measured'
+            )
+            axes[0,1].set_title('Energy Evolution')
+            axes[0,1].set_xlabel('Time')
+            axes[0,1].set_ylabel('Energy')
+            axes[0,1].legend()
+            
+            # Information content evolution
+            axes[1,0].plot(
+                self.metrics_df['time'],
+                self.metrics_df['information_content'],
+                label='Measured'
+            )
+            axes[1,0].set_title('Information Content Evolution')
+            axes[1,0].set_xlabel('Time')
+            axes[1,0].set_ylabel('Information Content')
+            axes[1,0].legend()
+            
+            # Stability measure evolution
+            axes[1,1].plot(
+                self.metrics_df['time'],
+                self.metrics_df['stability_measure'],
+                label='Measured'
+            )
+            axes[1,1].set_title('Stability Measure Evolution')
+            axes[1,1].set_xlabel('Time')
+            axes[1,1].set_ylabel('Stability Measure')
+            axes[1,1].legend()
+            
+            fig.tight_layout()
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"Evolution metrics plot failed: {str(e)}")
+            raise
+    
+    def _plot_hierarchy_analysis(self) -> plt.Figure:
+        """Plot hierarchy analysis metrics."""
+        try:
+            # Implement hierarchy analysis plot generation logic here
+            pass
+            
+        except Exception as e:
+            logger.error(f"Hierarchy analysis plot failed: {str(e)}")
+            raise
+    
+    def _plot_validation_summary(self) -> plt.Figure:
+        """Plot validation summary metrics."""
+        try:
+            # Implement validation summary plot generation logic here
+            pass
+            
+        except Exception as e:
+            logger.error(f"Validation summary plot failed: {str(e)}")
+            raise
+    
+    def _plot_phase_space(self) -> plt.Figure:
+        """Plot phase space analysis metrics."""
+        try:
+            # Implement phase space analysis plot generation logic here
+            pass
+            
+        except Exception as e:
+            logger.error(f"Phase space analysis plot failed: {str(e)}")
+            raise
+    
+    def _save_figures(self, figures: Dict[str, plt.Figure]) -> None:
+        """Save generated figures to disk."""
+        try:
+            for name, fig in figures.items():
+                fig.savefig(self.output_dir / f"{name}.png")
+            
+        except Exception as e:
+            logger.error(f"Failed to save figures: {str(e)}")
             raise

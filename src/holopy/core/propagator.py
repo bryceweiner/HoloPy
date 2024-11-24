@@ -10,9 +10,13 @@ from functools import lru_cache
 from ..config.constants import (
     INFORMATION_GENERATION_RATE,
     COUPLING_CONSTANT,
-    SPEED_OF_LIGHT
+    SPEED_OF_LIGHT,
+    PLANCK_CONSTANT,
+    E8_DIMENSION,
+    CRITICAL_THRESHOLD
 )
 from scipy.fft import fft, ifft
+from ..optimization.state_cache import LRUStateCache
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,8 @@ class FieldPropagator:
         spatial_points: int,
         dt: float,
         spatial_extent: float,
-        cache_size: int = 1000
+        cache_size: int = 1000,
+        cache_maxbytes: Optional[int] = None
     ):
         """
         Initialize the field propagator.
@@ -36,11 +41,11 @@ class FieldPropagator:
             dt: Time step
             spatial_extent: Physical size of the simulation domain
             cache_size: Size of the propagator cache
+            cache_maxbytes: Maximum size of the cache in bytes
         """
         self.spatial_points = spatial_points
         self.dt = dt
         self.dx = spatial_extent / spatial_points
-        self.cache_size = cache_size
         
         # Initialize spatial grid and momentum space
         self.x_grid = np.linspace(-spatial_extent/2, spatial_extent/2, spatial_points)
@@ -48,6 +53,12 @@ class FieldPropagator:
         
         # Initialize propagator components
         self._initialize_propagator()
+        
+        # Initialize cache
+        self.cache = LRUStateCache(
+            maxsize=cache_size,
+            maxbytes=cache_maxbytes
+        )
         
         logger.info(
             f"Initialized FieldPropagator with {spatial_points} points, "
@@ -175,109 +186,247 @@ class FieldPropagator:
             
         return self._kernel_cache[key]
 
-class DualContinuumPropagator(FieldPropagator):
-    """
-    Extends FieldPropagator for dual continuum evolution with holographic corrections.
-    """
+from ..config.constants import (
+    INFORMATION_GENERATION_RATE,
+    COUPLING_CONSTANT,
+    SPEED_OF_LIGHT,
+    PLANCK_CONSTANT,
+    E8_DIMENSION,
+    CRITICAL_THRESHOLD
+)
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DualContinuumPropagator:
+    """Manages evolution of coupled quantum-classical states."""
     
     def __init__(
         self,
         spatial_points: int,
         spatial_extent: float,
-        cache_size: int = 1000
+        dt: float
     ):
-        """Initialize the dual continuum propagator."""
-        super().__init__(spatial_points, 0.01, spatial_extent, cache_size)
-        self._init_dual_continuum_kernel()
+        self.spatial_points = spatial_points
+        self.spatial_extent = spatial_extent
+        self.dt = dt
+        self.dx = spatial_extent / spatial_points
         
-        logger.info(
-            f"Initialized DualContinuumPropagator with {spatial_points} points"
-        )
+        # Initialize operators
+        self.kinetic_operator = self._initialize_kinetic_operator()
+        self.potential_operator = self._initialize_potential_operator()
+        self.coupling_operator = self._initialize_coupling_operator()
+        
+        # Initialize k-space grid
+        self.k_space = 2 * np.pi * np.fft.fftfreq(spatial_points, self.dx)
+        
+        logger.info(f"Initialized DualContinuumPropagator")
     
-    def _init_dual_continuum_kernel(self) -> None:
-        """Initialize the dual continuum specific kernel components."""
+    def evolve_quantum_state(
+        self,
+        quantum_state: np.ndarray,
+        classical_density: np.ndarray,
+        time: float
+    ) -> np.ndarray:
+        """Evolve quantum state with modified dynamics."""
         try:
-            # Calculate distance matrix with holographic corrections
-            x_matrix = self.x_grid[:, np.newaxis] - self.x_grid[np.newaxis, :]
+            # Calculate modified dispersion
+            omega = self._calculate_modified_dispersion(time)
             
-            # Enhanced kernel incorporating active inference
-            self.dual_kernel = (
-                np.exp(-INFORMATION_GENERATION_RATE * np.abs(x_matrix)) *
-                (1 + INFORMATION_GENERATION_RATE * np.abs(x_matrix)) *
-                (1 + self._active_inference_potential()[:, np.newaxis])
+            # Transform to k-space
+            psi_k = np.fft.fft(quantum_state)
+            
+            # Apply modified evolution
+            psi_k_evolved = psi_k * np.exp(-1j * omega * self.dt)
+            
+            # Apply coupling term
+            coupling_phase = self._calculate_coupling_phase(
+                classical_density,
+                time
+            )
+            psi_k_evolved *= np.exp(-1j * coupling_phase)
+            
+            # Transform back to position space
+            evolved_state = np.fft.ifft(psi_k_evolved)
+            
+            # Normalize
+            evolved_state /= np.linalg.norm(evolved_state)
+            
+            return evolved_state
+            
+        except Exception as e:
+            logger.error(f"Quantum evolution failed: {str(e)}")
+            raise
+    
+    def evolve_classical_density(
+        self,
+        classical_density: np.ndarray,
+        quantum_state: np.ndarray,
+        time: float
+    ) -> np.ndarray:
+        """Evolve classical density with quantum backreaction."""
+        try:
+            # Calculate quantum potential
+            quantum_potential = self._calculate_quantum_potential(
+                quantum_state
             )
             
-            logger.debug("Initialized dual continuum kernel")
+            # Calculate classical force
+            classical_force = -np.gradient(classical_density) / self.dx
+            
+            # Calculate quantum force
+            quantum_force = -np.gradient(quantum_potential) / self.dx
+            
+            # Combine forces with coupling
+            total_force = (
+                classical_force +
+                COUPLING_CONSTANT * quantum_force *
+                np.exp(-INFORMATION_GENERATION_RATE * time)
+            )
+            
+            # Evolve density
+            evolved_density = classical_density - self.dt * np.gradient(
+                classical_density * total_force
+            ) / self.dx
+            
+            # Ensure positivity and normalization
+            evolved_density = np.maximum(evolved_density, 0)
+            evolved_density /= np.sum(evolved_density) * self.dx
+            
+            return evolved_density
             
         except Exception as e:
-            logger.error(f"Failed to initialize dual continuum kernel: {str(e)}")
+            logger.error(f"Classical evolution failed: {str(e)}")
             raise
     
-    def propagate_dual(
+    def _calculate_modified_dispersion(
         self,
-        matter_wavefunction: np.ndarray,
-        antimatter_wavefunction: np.ndarray,
-        dt: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Propagate both matter and antimatter wavefunctions with holographic corrections.
-        
-        Args:
-            matter_wavefunction: Matter component state vector
-            antimatter_wavefunction: Antimatter component state vector
-            dt: Time step for propagation
-            
-        Returns:
-            Tuple of propagated matter and antimatter wavefunctions
-        """
+        time: float
+    ) -> np.ndarray:
+        """Calculate modified dispersion relation ω(k)."""
         try:
-            # Get standard propagator for the time step
-            propagator = self._get_propagator(dt)
+            # Standard dispersion
+            omega_standard = np.sqrt(
+                (SPEED_OF_LIGHT * self.k_space)**2 +
+                (PLANCK_CONSTANT * self.k_space**2)**2
+            )
             
-            # Apply propagator to matter continuum with corrections
-            matter_new = propagator @ matter_wavefunction
-            matter_new *= np.exp(-INFORMATION_GENERATION_RATE * dt / 2)
+            # Holographic modification
+            modification = 1j * PLANCK_CONSTANT * INFORMATION_GENERATION_RATE * self.k_space
             
-            # Apply propagator to antimatter continuum
-            # Note: Different evolution due to holographic asymmetry
-            antimatter_new = propagator @ antimatter_wavefunction
+            # Combined dispersion
+            omega = omega_standard + modification
             
-            # Apply dual continuum specific evolution
-            matter_new = np.dot(self.dual_kernel, matter_new)
-            antimatter_new = np.dot(self.dual_kernel, antimatter_new)
+            # Apply temporal damping
+            omega *= np.exp(-INFORMATION_GENERATION_RATE * time)
             
-            # Normalize states
-            matter_new /= np.sqrt(np.sum(np.abs(matter_new)**2))
-            antimatter_new /= np.sqrt(np.sum(np.abs(antimatter_new)**2))
-            
-            logger.debug(f"Propagated dual continuum states for dt={dt:.6f}")
-            
-            return matter_new, antimatter_new
+            return omega
             
         except Exception as e:
-            logger.error(f"Dual continuum propagation failed: {str(e)}")
+            logger.error(f"Dispersion calculation failed: {str(e)}")
             raise
     
-    def get_dual_kernel(self, x1: float, x2: float) -> Tuple[complex, complex]:
-        """
-        Calculate the dual continuum propagator kernels between two points.
-        
-        Args:
-            x1: First spatial point
-            x2: Second spatial point
+    def _calculate_coupling_phase(
+        self,
+        classical_density: np.ndarray,
+        time: float
+    ) -> np.ndarray:
+        """Calculate coupling-induced phase evolution."""
+        try:
+            # Calculate classical potential
+            classical_potential = np.log(classical_density + 1e-10)
             
-        Returns:
-            Tuple of matter and antimatter kernels
-        """
-        key = (x1, x2)
-        if key not in self._kernel_cache:
-            # Calculate standard kernel
-            base_kernel = self.get_kernel(x1, x2)
+            # Calculate coupling strength
+            coupling = COUPLING_CONSTANT * np.exp(-INFORMATION_GENERATION_RATE * time)
             
-            # Add dual continuum corrections
-            matter_kernel = base_kernel * np.exp(-INFORMATION_GENERATION_RATE * abs(x1 - x2))
-            antimatter_kernel = base_kernel
+            # Calculate phase
+            phase = coupling * classical_potential
             
-            self._kernel_cache[key] = (matter_kernel, antimatter_kernel)
+            return phase
             
-        return self._kernel_cache[key]
+        except Exception as e:
+            logger.error(f"Coupling phase calculation failed: {str(e)}")
+            raise
+    
+    def _calculate_quantum_potential(
+        self,
+        quantum_state: np.ndarray
+    ) -> np.ndarray:
+        """Calculate quantum potential for backreaction."""
+        try:
+            # Calculate probability density
+            density = np.abs(quantum_state)**2
+            
+            # Calculate quantum potential
+            gradient_squared = (np.gradient(density) / self.dx)**2
+            laplacian = np.gradient(np.gradient(density)) / self.dx**2
+            
+            quantum_potential = -0.5 * PLANCK_CONSTANT**2 * (
+                laplacian / density -
+                0.5 * gradient_squared / density**2
+            )
+            
+            return quantum_potential
+            
+        except Exception as e:
+            logger.error(f"Quantum potential calculation failed: {str(e)}")
+            raise
+    
+    def _initialize_kinetic_operator(self) -> np.ndarray:
+        """Initialize kinetic energy operator."""
+        try:
+            # Create Laplacian in k-space
+            laplacian_k = -(self.k_space**2)
+            
+            # Transform to position space
+            kinetic = np.fft.ifft(
+                -0.5 * PLANCK_CONSTANT**2 * laplacian_k
+            ).real
+            
+            return kinetic
+            
+        except Exception as e:
+            logger.error(f"Kinetic operator initialization failed: {str(e)}")
+            raise
+    
+    def _initialize_potential_operator(self) -> np.ndarray:
+        """Initialize potential energy operator."""
+        try:
+            # Create harmonic potential
+            x = np.linspace(
+                -self.spatial_extent/2,
+                self.spatial_extent/2,
+                self.spatial_points
+            )
+            potential = 0.5 * x**2
+            
+            return potential
+            
+        except Exception as e:
+            logger.error(f"Potential operator initialization failed: {str(e)}")
+            raise
+    
+    def _initialize_coupling_operator(self) -> np.ndarray:
+        """Initialize quantum-classical coupling operator."""
+        try:
+            # Create coupling matrix
+            x = np.linspace(
+                -self.spatial_extent/2,
+                self.spatial_extent/2,
+                self.spatial_points
+            )
+            X, X_prime = np.meshgrid(x, x)
+            
+            # Calculate coupling strength
+            coupling = COUPLING_CONSTANT * np.exp(
+                -(X - X_prime)**2 / (2 * self.dx**2)
+            )
+            
+            # Ensure symmetry
+            coupling = 0.5 * (coupling + coupling.T)
+            
+            return coupling
+            
+        except Exception as e:
+            logger.error(f"Coupling operator initialization failed: {str(e)}")
+            raise
