@@ -57,16 +57,39 @@ class SystemState:
 class MetricsCollector:
     """Comprehensive metrics collection and analysis system."""
     
-    def __init__(self, output_dir=None):
+    def __init__(self, output_dir: Path):
         """Initialize metrics collector."""
-        self.output_dir = output_dir or Path("output")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = output_dir
         self.metrics = defaultdict(list)
         
-        # Use default style instead of seaborn
-        plt.style.use('default')
+        # Initialize all expected metrics
+        self._initialize_metrics()
         
-        logger.info(f"Initialized MetricsCollector with output_dir={output_dir}")
+    def _initialize_metrics(self):
+        """Initialize all expected metric categories."""
+        expected_metrics = [
+            'time',
+            'density',
+            'temperature',
+            'entropy',
+            'information_content',
+            'processing_rate',
+            'coherence',
+            'entanglement',
+            'phase',
+            'energy',
+            'coupling_strength',
+            'information_flow',
+            'stability_measure'
+        ]
+        
+        for metric in expected_metrics:
+            self.metrics[metric] = []
+            
+    def update(self, metrics_dict: Dict[str, float]):
+        """Update metrics with new values."""
+        for key, value in metrics_dict.items():
+            self.metrics[key].append(value)
     
     def collect_state(
         self,

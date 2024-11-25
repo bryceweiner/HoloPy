@@ -74,22 +74,22 @@ class HilbertContinuum:
         self.matter_wavefunction = None
         self.antimatter_wavefunction = None
         
-        # State tracking DataFrame
-        self.metrics_df = pd.DataFrame(columns=[
-            'time',
-            'density',
-            'temperature', 
-            'entropy',
-            'information_content',
-            'processing_rate',
-            'coherence',
-            'entanglement',
-            'phase',
-            'energy',
-            'coupling_strength',
-            'information_flow',
-            'stability_measure'
-        ])
+        # Initialize metrics DataFrame with proper dtypes
+        self.metrics_df = pd.DataFrame({
+            'time': pd.Series(dtype=float),
+            'density': pd.Series(dtype=float),
+            'temperature': pd.Series(dtype=float),
+            'entropy': pd.Series(dtype=float),
+            'information_content': pd.Series(dtype=float),
+            'processing_rate': pd.Series(dtype=float),
+            'coherence': pd.Series(dtype=float),
+            'entanglement': pd.Series(dtype=float),
+            'phase': pd.Series(dtype=float),
+            'energy': pd.Series(dtype=float),
+            'coupling_strength': pd.Series(dtype=float),
+            'information_flow': pd.Series(dtype=float),
+            'stability_measure': pd.Series(dtype=float)
+        })
         
         # Initialize propagator with all required parameters
         self.propagator = DualContinuumPropagator(
@@ -123,7 +123,10 @@ class HilbertContinuum:
         
         # Initialize optimization components
         self.optimizer = PerformanceOptimizer(self.dimension)
-        self.visualizer = HolographicVisualizer(self.dimension, self.extent)
+        self.visualizer = HolographicVisualizer(
+            dimension=self.dimension,
+            spatial_extent=self.extent
+        )
         
         # Cache frequently used values
         self.dt = dt
@@ -145,7 +148,7 @@ class HilbertContinuum:
             psi /= np.sqrt(np.sum(np.abs(psi)**2))
             
             # Project onto holographic basis
-            psi = self.hilbert.project_state(psi)
+            psi = self.hilbert_space.project_state(psi)
             
             # Initialize matter and antimatter states
             self.matter_wavefunction = psi.copy()
@@ -210,72 +213,57 @@ class HilbertContinuum:
             matter_density = np.abs(self.matter_wavefunction)**2
             antimatter_density = np.abs(self.antimatter_wavefunction)**2
             
-            # Calculate information measures
-            entropy = self.hilbert.calculate_entropy(self.matter_wavefunction)
-            information = -np.sum(matter_density * np.log2(matter_density + 1e-10))
-            
-            # Calculate energy and coupling terms
-            energy = self.hilbert.calculate_energy(self.matter_wavefunction)
-            coupling = self._calculate_coupling_strength()
-            
+            # Calculate metrics
             metrics = {
                 'time': time,
                 'density': np.sum(matter_density),
-                'entropy': entropy,
-                'information_content': information,
+                'entropy': self.hilbert_space.calculate_entropy(self.matter_wavefunction),
+                'information_content': -np.sum(matter_density * np.log2(matter_density + 1e-10)),
                 'processing_rate': INFORMATION_GENERATION_RATE,
                 'coherence': self.get_coherence(),
-                'energy': energy,
-                'coupling_strength': coupling,
+                'energy': self.hilbert_space.calculate_energy(self.matter_wavefunction),
+                'coupling_strength': self._calculate_coupling_strength(),
                 'stability_measure': np.abs(np.vdot(
                     self.matter_wavefunction,
                     self.matter_wavefunction
                 )),
                 'entanglement': self._calculate_entanglement(),
                 'phase': np.angle(np.sum(self.matter_wavefunction)),
-                'information_flow': INFORMATION_GENERATION_RATE * entropy,
+                'information_flow': INFORMATION_GENERATION_RATE * self.hilbert_space.calculate_entropy(self.matter_wavefunction),
                 'temperature': self._calculate_temperature()
             }
             
-            # Add prediction metrics if available
-            if pred_metrics is not None:
-                metrics.update({
-                    'prediction_error': pred_metrics.prediction_error,
-                    'prediction_confidence': pred_metrics.confidence,
-                    'information_gain': pred_metrics.information_gain
-                })
+            # Update metrics collector
+            self.metrics_collector.update(metrics)
             
-            self.metrics_df = pd.concat([
-                self.metrics_df,
-                pd.DataFrame([metrics])
-            ], ignore_index=True)
-            
-            logger.debug(f"Updated metrics at t={time:.6f}")
+            # Update DataFrame using loc to avoid concatenation warning
+            new_idx = len(self.metrics_df)
+            self.metrics_df.loc[new_idx] = metrics
             
         except Exception as e:
             logger.error(f"Metrics update failed: {str(e)}")
             raise
     
     def get_coherence(self) -> float:
-        """Calculate cross-continuum coherence with holographic corrections."""
+        """Calculate quantum coherence measure."""
         try:
-            # Calculate basic overlap
-            overlap = np.abs(np.sum(
-                np.conj(self.matter_wavefunction) * 
-                self.antimatter_wavefunction
-            ))
+            if self.matter_wavefunction is None:
+                return 0.0
+                
+            # Calculate off-diagonal elements of density matrix
+            rho = np.outer(
+                self.matter_wavefunction,
+                np.conj(self.matter_wavefunction)
+            )
             
-            # Apply holographic corrections
-            coherence = overlap / self.dimension
+            # l1-norm coherence measure
+            coherence = np.sum(np.abs(rho)) - np.sum(np.abs(np.diag(rho)))
             
-            # Include active inference effects
-            coherence *= (1 + self._calculate_active_inference_term())
-            
-            return coherence
+            return float(np.real(coherence))
             
         except Exception as e:
             logger.error(f"Coherence calculation failed: {str(e)}")
-            raise
+            return 0.0
     
     def _calculate_active_inference_term(self) -> float:
         """Calculate active inference contribution to coherence."""
@@ -432,3 +420,32 @@ class HilbertContinuum:
         except Exception as e:
             logger.error(f"Bound application failed: {str(e)}")
             raise
+    
+    def _calculate_entanglement(self) -> float:
+        """Calculate entanglement entropy between matter and antimatter states."""
+        try:
+            # Calculate reduced density matrix
+            rho = np.outer(
+                self.matter_wavefunction,
+                np.conj(self.antimatter_wavefunction)
+            )
+            
+            # Calculate eigenvalues of reduced density matrix
+            eigenvalues = np.linalg.eigvalsh(rho)
+            
+            # Clean up numerical noise and normalize
+            eigenvalues = np.abs(eigenvalues)  # Ensure positive
+            eigenvalues = eigenvalues[eigenvalues > 1e-10]  # Remove negligible values
+            if len(eigenvalues) > 0:
+                eigenvalues = eigenvalues / np.sum(eigenvalues)  # Normalize
+            
+            # Calculate von Neumann entropy
+            entanglement = -np.sum(
+                eigenvalues * np.log2(eigenvalues + 1e-10)
+            )
+            
+            return max(0.0, float(np.real(entanglement)))  # Ensure non-negative
+            
+        except Exception as e:
+            logger.error(f"Entanglement calculation failed: {str(e)}")
+            return 0.0
