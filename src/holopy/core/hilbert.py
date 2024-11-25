@@ -24,99 +24,137 @@ class CompressionMethod(Enum):
     # Remove BLOSC as it's causing issues
 
 class HilbertSpace:
-    """Manages quantum state operations in holographic Hilbert space."""
+    """Hilbert space implementation with holographic constraints."""
     
-    def __init__(
-        self,
-        dimension: int,
-        extent: float,
-        storage_path: Optional[Path] = None,
-        compression_method: str = "none"
-    ):
-        """Initialize Hilbert space."""
+    def __init__(self, dimension: int, extent: float):
+        """Initialize Hilbert space.
+        
+        Args:
+            dimension: Number of spatial points
+            extent: Total spatial extent
+        """
         self.dimension = dimension
         self.extent = extent
-        self.boundary_radius = extent
-        self.storage_path = storage_path or Path.home() / ".holopy" / "states"
-        self.compression_method = compression_method
-        self.persistence = StatePersistence(self.storage_path)
         
-        # Create Hamiltonian
-        self.hamiltonian = self._create_hamiltonian()
-        self.basis_states = self._create_holographic_basis()
-        self.max_information = np.log2(dimension)
+        # Initialize spatial grid
+        self.dx = extent / dimension
+        self.x = np.linspace(-extent/2, extent/2, dimension)
         
-        logger.info(
-            f"Initialized HilbertSpace(d={dimension}, r={extent}) "
-            f"with max_information={self.max_information:.2e}"
-        )
-
-    def save(
-        self,
-        state: np.ndarray,
-        metadata: Optional[Dict] = None,
-        timestamp: float = 0.0,
-        is_checkpoint: bool = False
-    ) -> Path:
-        """Save quantum state."""
-        if metadata is None:
-            metadata = {}
-        metadata.update({
-            'timestamp': timestamp,
-            'is_checkpoint': is_checkpoint
-        })
-        return self.persistence.save_state(state, metadata)
-    
-    def load(
-        self,
-        version_id: Optional[str] = None,
-        timestamp: Optional[float] = None,
-        latest_checkpoint: bool = False
-    ) -> Tuple[np.ndarray, Dict]:
-        """Load quantum state."""
-        name = f"state_{timestamp if timestamp is not None else version_id}"
-        return self.persistence.load_state(name)
-
-    def project_state(self, state: np.ndarray) -> np.ndarray:
-        """Project state onto holographic basis."""
-        # Ensure state is normalized
-        norm = np.sqrt(np.vdot(state, state).real)
-        if norm > 0:
-            state = state / norm
-        return state
-
-    def calculate_entropy(self, state: np.ndarray) -> float:
-        """Calculate von Neumann entropy of state."""
-        probs = np.abs(state)**2
-        probs = probs[probs > 0]
-        return -np.sum(probs * np.log2(probs))
-
-    def _create_hamiltonian(self):
-        """Create holographic Hamiltonian."""
-        # Create sparse kinetic energy operator
-        k_squared = sparse.diags(
-            [(2*np.pi*n/(self.boundary_radius*self.dimension))**2 
-             for n in range(self.dimension)]
-        )
-        return -0.5 * k_squared
-
-    def _create_holographic_basis(self) -> np.ndarray:
-        """Create holographic basis states."""
-        return np.eye(self.dimension)
-
-    def _enforce_entropy_bound(self, state: np.ndarray) -> np.ndarray:
-        """Enforce holographic entropy bound on state."""
-        current_entropy = self.calculate_entropy(state)
-        if current_entropy <= self.max_information:
-            return state
+        # Initialize momentum space grid
+        self.dk = 2 * np.pi / extent
+        self.k = 2 * np.pi * np.fft.fftfreq(dimension, self.dx)
+        
+        # Initialize potential
+        self.potential = 0.5 * self.x**2  # Harmonic potential
+        
+        logger.debug(f"Initialized HilbertSpace with dimension {dimension}, extent {extent}")
+        
+    def calculate_energy(self, wavefunction: np.ndarray) -> float:
+        """Calculate total energy of the wavefunction.
+        
+        Args:
+            wavefunction: Complex wavefunction array
             
-        # Apply progressive projection until bound is satisfied
-        projected = state.copy()
-        scale_factor = 0.9
-        
-        while self.calculate_entropy(projected) > self.max_information:
-            projected = self.project_state(projected)
-            projected *= scale_factor
-            scale_factor *= 0.9
+        Returns:
+            float: Total energy (kinetic + potential)
+        """
+        try:
+            # Normalize wavefunction if needed
+            norm = np.sqrt(np.sum(np.abs(wavefunction)**2) * self.dx)
+            if abs(norm - 1.0) > 1e-10:
+                wavefunction = wavefunction / norm
             
-        return projected / np.sqrt(np.vdot(projected, projected)) 
+            # Calculate kinetic energy using FFT
+            psi_k = np.fft.fft(wavefunction)
+            kinetic = 0.5 * np.sum(np.abs(psi_k * self.k)**2) * self.dx
+            
+            # Calculate potential energy
+            potential = np.sum(self.potential * np.abs(wavefunction)**2) * self.dx
+            
+            total_energy = float(np.real(kinetic + potential))
+            
+            logger.debug(f"Calculated energy: {total_energy:.6f} "
+                        f"(K={float(np.real(kinetic)):.6f}, "
+                        f"V={float(np.real(potential)):.6f})")
+            
+            return total_energy
+            
+        except Exception as e:
+            logger.error(f"Energy calculation failed: {str(e)}")
+            raise
+
+    def project_state(self, wavefunction: np.ndarray) -> np.ndarray:
+        """Project state onto holographic basis ensuring boundary conditions.
+        
+        Args:
+            wavefunction: Input wavefunction array
+            
+        Returns:
+            np.ndarray: Projected wavefunction
+        """
+        try:
+            # Ensure proper normalization
+            norm = np.sqrt(np.sum(np.abs(wavefunction)**2) * self.dx)
+            if abs(norm - 1.0) > 1e-10:
+                wavefunction = wavefunction / norm
+            
+            # Project onto momentum space
+            psi_k = np.fft.fft(wavefunction)
+            
+            # Apply holographic cutoff in momentum space
+            # (implementing holographic principle constraint)
+            k_max = np.pi / self.dx  # Nyquist frequency
+            k_cutoff = k_max * np.sqrt(self.dimension) / self.dimension
+            mask = np.abs(self.k) <= k_cutoff
+            psi_k *= mask
+            
+            # Transform back to position space
+            projected_state = np.fft.ifft(psi_k)
+            
+            # Renormalize after projection
+            norm = np.sqrt(np.sum(np.abs(projected_state)**2) * self.dx)
+            projected_state = projected_state / norm
+            
+            logger.debug(f"Projected state with cutoff k={k_cutoff:.2f}")
+            
+            return projected_state
+            
+        except Exception as e:
+            logger.error(f"State projection failed: {str(e)}")
+            raise
+
+    def calculate_entropy(self, wavefunction: np.ndarray) -> float:
+        """Calculate von Neumann entropy of the quantum state.
+        
+        Args:
+            wavefunction: Complex wavefunction array
+            
+        Returns:
+            float: Von Neumann entropy
+        """
+        try:
+            # Calculate density matrix in position basis
+            density = np.outer(wavefunction, np.conj(wavefunction))
+            
+            # Calculate eigenvalues of density matrix
+            eigenvalues = np.linalg.eigvalsh(density)
+            
+            # Remove negligible eigenvalues to avoid log(0)
+            eigenvalues = eigenvalues[eigenvalues > 1e-10]
+            
+            # Normalize eigenvalues
+            eigenvalues = eigenvalues / np.sum(eigenvalues)
+            
+            # Calculate von Neumann entropy: -Tr(ρ ln ρ)
+            entropy = -np.sum(eigenvalues * np.log(eigenvalues))
+            
+            # Convert to bits (log2) and ensure real value
+            entropy = float(np.real(entropy / np.log(2)))
+            
+            logger.debug(f"Calculated entropy: {entropy:.6f} bits")
+            
+            return entropy
+            
+        except Exception as e:
+            logger.error(f"Entropy calculation failed: {str(e)}")
+            raise

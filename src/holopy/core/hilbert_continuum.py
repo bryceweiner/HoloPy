@@ -123,10 +123,7 @@ class HilbertContinuum:
         
         # Initialize optimization components
         self.optimizer = PerformanceOptimizer(self.dimension)
-        self.visualizer = HolographicVisualizer(
-            dimension=self.dimension,
-            spatial_extent=self.extent
-        )
+        self.visualizer = HolographicVisualizer(self.dimension)
         
         # Cache frequently used values
         self.dt = dt
@@ -163,44 +160,91 @@ class HilbertContinuum:
             logger.error(f"Failed to create initial state: {str(e)}")
             raise
     
-    def evolve(self, dt: float) -> None:
-        """Enhanced evolution with optimizations."""
+    def evolve(self, *, steps: int) -> None:
+        """Evolve the system for a specified number of steps.
+        
+        Args:
+            steps: Number of time steps to evolve
+        """
         try:
-            # Use optimized evolution
-            matter_new = self.optimizer.optimized_evolution_step(
-                self.matter_wavefunction,
-                self.cached_propagator,
-                dt
+            if self.matter_wavefunction is None:
+                raise ValueError("Initial state not created")
+            
+            # Initialize metrics collector if not already done
+            if not hasattr(self, 'metrics_collector'):
+                self.metrics_collector = MetricsCollector(self.output_dir)
+            
+            # Evolve system
+            for _ in range(steps):
+                self.evolve_step()
+            
+            logger.info(f"Completed {steps} evolution steps")
+            
+        except Exception as e:
+            logger.error(f"Evolution failed: {str(e)}")
+            raise
+    
+    def evolve_step(self) -> None:
+        """Evolve the quantum state by one time step using split-operator method."""
+        try:
+            if self.matter_wavefunction is None or self.antimatter_wavefunction is None:
+                raise ValueError("Initial state not created")
+            
+            # Get current time
+            current_time = len(self.metrics_df) * self.dt
+            
+            # 1. Half-step kinetic evolution
+            k = self.hilbert_space.k
+            exp_k = np.exp(-0.5j * k**2 * self.dt)
+            
+            psi_k_matter = np.fft.fft(self.matter_wavefunction)
+            psi_k_antimatter = np.fft.fft(self.antimatter_wavefunction)
+            
+            psi_k_matter *= exp_k
+            psi_k_antimatter *= exp_k
+            
+            self.matter_wavefunction = np.fft.ifft(psi_k_matter)
+            self.antimatter_wavefunction = np.fft.ifft(psi_k_antimatter)
+            
+            # 2. Full step potential evolution
+            V = self.hilbert_space.potential
+            exp_v = np.exp(-1j * V * self.dt)
+            
+            self.matter_wavefunction *= exp_v
+            self.antimatter_wavefunction *= exp_v
+            
+            # 3. Matter-antimatter coupling
+            coupling = self._calculate_coupling_strength()
+            interaction = coupling * (
+                np.abs(self.antimatter_wavefunction)**2 * self.matter_wavefunction +
+                np.abs(self.matter_wavefunction)**2 * self.antimatter_wavefunction
             )
             
-            antimatter_new = self.optimizer.optimized_evolution_step(
-                self.antimatter_wavefunction,
-                self.cached_propagator,
-                dt
-            )
+            self.matter_wavefunction += -1j * self.dt * interaction
+            self.antimatter_wavefunction += -1j * self.dt * np.conj(interaction)
             
-            # Calculate coupling with optimization
-            coupling = self.optimizer.optimized_coupling_calculation(
-                matter_new,
-                antimatter_new
-            )
+            # 4. Half-step kinetic evolution
+            psi_k_matter = np.fft.fft(self.matter_wavefunction)
+            psi_k_antimatter = np.fft.fft(self.antimatter_wavefunction)
             
-            # Update states
-            self.matter_wavefunction = matter_new
-            self.antimatter_wavefunction = antimatter_new
+            psi_k_matter *= exp_k
+            psi_k_antimatter *= exp_k
+            
+            self.matter_wavefunction = np.fft.ifft(psi_k_matter)
+            self.antimatter_wavefunction = np.fft.ifft(psi_k_antimatter)
+            
+            # 5. Project states to maintain holographic constraints
+            self.matter_wavefunction = self.hilbert_space.project_state(
+                self.matter_wavefunction
+            )
+            self.antimatter_wavefunction = self.hilbert_space.project_state(
+                self.antimatter_wavefunction
+            )
             
             # Update metrics
-            metrics = self._calculate_metrics(dt)
-            self.metrics_df = self.metrics_df.append(metrics, ignore_index=True)
+            self._update_metrics(current_time + self.dt)
             
-            # Generate visualizations if needed
-            if self.visualization_enabled:
-                self.visualizer.plot_dual_continuum_state(
-                    self.matter_wavefunction,
-                    self.antimatter_wavefunction,
-                    self.metrics_df.iloc[-1].time,
-                    save_path=self.plot_dir / f"state_{len(self.metrics_df)}.png"
-                )
+            logger.debug(f"Evolved state to t={current_time + self.dt:.3f}")
             
         except Exception as e:
             logger.error(f"Evolution step failed: {str(e)}")

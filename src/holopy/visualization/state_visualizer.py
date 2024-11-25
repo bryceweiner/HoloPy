@@ -18,23 +18,33 @@ logger = logging.getLogger(__name__)
 class HolographicVisualizer:
     """Visualization tools for holographic states and metrics."""
     
-    def __init__(self, hilbert_space: Optional[HilbertSpace] = None):
+    def __init__(self, dimension: int):
         """Initialize visualizer.
         
         Args:
-            hilbert_space: Optional HilbertSpace instance
+            dimension: System dimension
         """
-        self.hilbert_space = hilbert_space or HilbertSpace(
-            dimension=128,
-            extent=10.0,
-            compression_method="none"
-        )
-        self.output_dir = Path("./visualizations")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.dimension = dimension
         
-        # Set style
-        plt.style.use('seaborn-darkgrid')
-        sns.set_palette("husl")
+        # Use default style with custom parameters
+        plt.style.use('default')
+        
+        # Set visualization parameters directly
+        plt.rcParams.update({
+            'figure.figsize': (10, 6),
+            'axes.grid': True,
+            'grid.alpha': 0.3,
+            'axes.facecolor': '#f0f0f0',
+            'axes.labelsize': 12,
+            'axes.titlesize': 14,
+            'lines.linewidth': 2,
+            'font.family': 'sans-serif',
+            'font.size': 10,
+            'legend.fontsize': 10,
+            'legend.frameon': True,
+            'legend.framealpha': 0.8,
+            'legend.edgecolor': 'gray'
+        })
     
     def plot_state_evolution(
         self,

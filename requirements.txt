@@ -6,12 +6,14 @@ charset-normalizer==3.4.0
 click==8.1.7
 colorama==0.4.6
 contourpy==1.3.1
+coverage==7.6.8
 cycler==0.12.1
 filelock==3.16.1
 fonttools==4.55.0
 frozenlist==1.5.0
 fsspec==2024.10.0
 h5py==3.12.1
+-e git+ssh://git@github.com/bryceweiner/N4-Model.git@beefe4acd8643db0c3fd790d68574d9c1babb0c2#egg=holopy
 idna==3.10
 iniconfig==2.0.0
 Jinja2==3.1.4
@@ -34,8 +36,11 @@ plotly==5.24.1
 pluggy==1.5.0
 protobuf==5.28.3
 psutil==6.1.0
+py-cpuinfo==9.0.0
 pyparsing==3.2.0
 pytest==8.3.3
+pytest-benchmark==5.1.0
+pytest-cov==6.0.0
 python-dateutil==2.9.0.post0
 pytz==2024.2
 PyYAML==6.0.2
