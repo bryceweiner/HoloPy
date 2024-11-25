@@ -5,7 +5,6 @@ from ..config.constants import (
     INFORMATION_GENERATION_RATE,
     COUPLING_CONSTANT,
     PLANCK_LENGTH,
-    LIGHT_SPEED
 )
 import logging
 

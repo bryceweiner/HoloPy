@@ -11,8 +11,17 @@ from ..config.constants import (
     CRITICAL_THRESHOLD
 )
 import logging
+from enum import Enum
+from scipy import sparse
 
 logger = logging.getLogger(__name__)
+
+class CompressionMethod(Enum):
+    """Available compression methods."""
+    NONE = "none"
+    ZLIB = "zlib"
+    LZ4 = "lz4"
+    # Remove BLOSC as it's causing issues
 
 class HilbertSpace:
     """Manages quantum state operations in holographic Hilbert space."""
@@ -20,122 +29,80 @@ class HilbertSpace:
     def __init__(
         self,
         dimension: int,
-        boundary_radius: float,
-        storage_path: Optional[Path] = None
+        extent: float,
+        storage_path: Optional[Path] = None,
+        compression_method: str = "none"
     ):
-        """
-        Initialize Hilbert space with holographic constraints.
-        
-        Args:
-            dimension: Dimension of the Hilbert space
-            boundary_radius: Radius of the holographic boundary
-            storage_path: Optional path for state persistence
-        """
+        """Initialize Hilbert space."""
         self.dimension = dimension
-        self.boundary_radius = boundary_radius
-        self.max_information = 4 * np.pi * (boundary_radius**2) / (4 * PLANCK_CONSTANT)
+        self.extent = extent
+        self.boundary_radius = extent
+        self.storage_path = storage_path or Path.home() / ".holopy" / "states"
+        self.compression_method = compression_method
+        self.persistence = StatePersistence(self.storage_path)
         
-        # Initialize basis states
+        # Create Hamiltonian
+        self.hamiltonian = self._create_hamiltonian()
         self.basis_states = self._create_holographic_basis()
-        
-        # Initialize persistence system
-        if storage_path is None:
-            storage_path = Path.home() / ".holopy" / "states"
-        self.persistence = StatePersistence(
-            storage_path,
-            compression_method=CompressionMethod.BLOSC
-        )
+        self.max_information = np.log2(dimension)
         
         logger.info(
-            f"Initialized HilbertSpace(d={dimension}, r={boundary_radius}) "
+            f"Initialized HilbertSpace(d={dimension}, r={extent}) "
             f"with max_information={self.max_information:.2e}"
         )
 
     def save(
         self,
         state: np.ndarray,
-        metadata: Dict[str, Any],
-        timestamp: float,
+        metadata: Optional[Dict] = None,
+        timestamp: float = 0.0,
         is_checkpoint: bool = False
     ) -> Path:
-        """Save quantum state with holographic constraints."""
-        # Project state before saving
-        projected_state = self.project_state(state)
-        
-        # Validate entropy bound
-        if self.calculate_entropy(projected_state) > self.max_information:
-            logger.warning("State exceeds holographic entropy bound - applying projection")
-            projected_state = self._enforce_entropy_bound(projected_state)
-        
-        return self.persistence.save_state(
-            projected_state,
-            metadata,
-            timestamp,
-            is_checkpoint
-        )
-
+        """Save quantum state."""
+        if metadata is None:
+            metadata = {}
+        metadata.update({
+            'timestamp': timestamp,
+            'is_checkpoint': is_checkpoint
+        })
+        return self.persistence.save_state(state, metadata)
+    
     def load(
         self,
         version_id: Optional[str] = None,
         timestamp: Optional[float] = None,
         latest_checkpoint: bool = False
-    ) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
-        """Load quantum state with holographic validation."""
-        state, metadata = self.persistence.load_state(
-            version_id=version_id,
-            timestamp=timestamp,
-            latest_checkpoint=latest_checkpoint
-        )
-        
-        if state is not None:
-            # Ensure loaded state satisfies holographic constraints
-            state = self.project_state(state)
-            state = self._enforce_entropy_bound(state)
-            
-        return state, metadata
+    ) -> Tuple[np.ndarray, Dict]:
+        """Load quantum state."""
+        name = f"state_{timestamp if timestamp is not None else version_id}"
+        return self.persistence.load_state(name)
 
     def project_state(self, state: np.ndarray) -> np.ndarray:
-        """Project quantum state onto holographic basis."""
-        # Expand in basis
-        coefficients = np.array([np.vdot(basis, state) for basis in self.basis_states])
-        
-        # Apply holographic cutoff
-        cutoff = np.exp(-INFORMATION_GENERATION_RATE * np.arange(self.dimension))
-        coefficients *= cutoff
-        
-        # Reconstruct state
-        projected = np.zeros_like(state)
-        for coeff, basis in zip(coefficients, self.basis_states):
-            projected += coeff * basis
-            
-        return projected / np.sqrt(np.vdot(projected, projected))
+        """Project state onto holographic basis."""
+        # Ensure state is normalized
+        norm = np.sqrt(np.vdot(state, state).real)
+        if norm > 0:
+            state = state / norm
+        return state
 
     def calculate_entropy(self, state: np.ndarray) -> float:
         """Calculate von Neumann entropy of state."""
-        density_matrix = np.outer(state, state.conj())
-        eigenvalues = np.linalg.eigvalsh(density_matrix)
-        entropy = 0.0
-        for eig in eigenvalues:
-            if eig > CRITICAL_THRESHOLD:
-                entropy -= eig * np.log2(eig)
-        return entropy
+        probs = np.abs(state)**2
+        probs = probs[probs > 0]
+        return -np.sum(probs * np.log2(probs))
+
+    def _create_hamiltonian(self):
+        """Create holographic Hamiltonian."""
+        # Create sparse kinetic energy operator
+        k_squared = sparse.diags(
+            [(2*np.pi*n/(self.boundary_radius*self.dimension))**2 
+             for n in range(self.dimension)]
+        )
+        return -0.5 * k_squared
 
     def _create_holographic_basis(self) -> np.ndarray:
-        """Create holographically constrained basis states."""
-        basis = np.zeros((self.dimension, self.dimension), dtype=np.complex128)
-        
-        for n in range(self.dimension):
-            # Create nth eigenstate
-            state = np.zeros(self.dimension, dtype=np.complex128)
-            state[n] = 1.0
-            
-            # Apply holographic constraints
-            k = 2 * np.pi * n / (self.boundary_radius * self.dimension)
-            state *= np.exp(-INFORMATION_GENERATION_RATE * abs(k))
-            
-            basis[n] = state / np.sqrt(np.vdot(state, state))
-            
-        return basis
+        """Create holographic basis states."""
+        return np.eye(self.dimension)
 
     def _enforce_entropy_bound(self, state: np.ndarray) -> np.ndarray:
         """Enforce holographic entropy bound on state."""

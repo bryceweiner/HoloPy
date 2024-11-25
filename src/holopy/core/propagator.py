@@ -3,7 +3,8 @@ Field propagator module implementing holographic corrections and active inferenc
 """
 from typing import Optional, Dict, Tuple
 import numpy as np
-from scipy.sparse import csr_matrix
+import scipy
+from scipy.sparse import csr_matrix, diags
 from scipy.sparse.linalg import expm_multiply
 import logging
 from functools import lru_cache
@@ -17,8 +18,43 @@ from ..config.constants import (
 )
 from scipy.fft import fft, ifft
 from ..optimization.state_cache import LRUStateCache
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class CacheMetrics:
+    """Metrics for cache performance monitoring."""
+    hits: int = 0
+    misses: int = 0
+    evictions: int = 0
+    total_bytes: int = 0
+    
+    @property
+    def hit_rate(self) -> float:
+        """Calculate cache hit rate."""
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+@dataclass
+class KernelCache:
+    """Cache for propagator kernels."""
+    max_size: int = 1000
+    _cache: Dict[Tuple[float, float], complex] = None
+    
+    def __post_init__(self):
+        """Initialize cache dictionary."""
+        self._cache = {}
+    
+    def get(self, x1: float, x2: float) -> Optional[complex]:
+        """Get cached kernel value."""
+        return self._cache.get((x1, x2))
+    
+    def set(self, x1: float, x2: float, value: complex) -> None:
+        """Set kernel value in cache."""
+        if len(self._cache) >= self.max_size:
+            # Remove oldest entry
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[(x1, x2)] = value
 
 class FieldPropagator:
     """
@@ -51,140 +87,129 @@ class FieldPropagator:
         self.x_grid = np.linspace(-spatial_extent/2, spatial_extent/2, spatial_points)
         self.k_grid = 2 * np.pi * np.fft.fftfreq(spatial_points, self.dx)
         
-        # Initialize propagator components
-        self._initialize_propagator()
+        # Initialize kernel cache
+        self.kernel_cache = KernelCache(max_size=cache_size)
         
-        # Initialize cache
-        self.cache = LRUStateCache(
-            maxsize=cache_size,
-            maxbytes=cache_maxbytes
-        )
+        # Precompute k-space quantities
+        self._initialize_k_space()
         
         logger.info(
             f"Initialized FieldPropagator with {spatial_points} points, "
-            f"dt={dt:.2e}, dx={self.dx:.2e}"
+            f"dx={self.dx:.6f}, dt={dt:.6f}"
         )
     
-    def _initialize_propagator(self) -> None:
-        """Initialize the propagator components."""
-        # Construct kinetic and potential terms
-        self.kinetic = self._construct_kinetic()
-        self.potential = self._construct_potential()
+    def _initialize_k_space(self) -> None:
+        """Initialize k-space quantities."""
+        try:
+            # Calculate k^2 terms
+            self.k2 = self.k_grid**2
+            
+            # Calculate holographic corrections
+            self.holo_corrections = self._holographic_correction(self.k2)
+            
+            # Calculate propagation phase
+            self.propagation_phase = -0.5 * self.k2 * self.dt * (1.0 + self.holo_corrections)
+            
+        except Exception as e:
+            logger.error(f"K-space initialization failed: {str(e)}")
+            raise
+    
+    def _holographic_correction(self, k_squared: np.ndarray) -> np.ndarray:
+        """
+        Calculate holographic correction to kinetic term.
         
-        # Initialize caches
-        self._propagator_cache: Dict[float, csr_matrix] = {}
-        self._kernel_cache: Dict[Tuple[float, float], float] = {}
-    
-    def _construct_kinetic(self) -> csr_matrix:
-        """Construct the kinetic energy operator."""
-        # Include holographic corrections in momentum space
-        k2 = self.k_grid**2
-        kinetic_diag = -0.5 * k2 * (1 + self._holographic_correction(k2))
-        return csr_matrix(np.diag(kinetic_diag))
-    
-    def _construct_potential(self) -> csr_matrix:
-        """Construct the potential energy operator."""
-        # Include coupling terms and active inference
-        potential_diag = (
-            COUPLING_CONSTANT * self.x_grid**2 
-            + self._active_inference_potential()
-        )
-        return csr_matrix(np.diag(potential_diag))
-    
-    @lru_cache(maxsize=1000)
-    def _holographic_correction(self, k2: float) -> float:
-        """Calculate holographic corrections to the propagator."""
-        # Implement corrections based on holographic principle
-        return (
-            INFORMATION_GENERATION_RATE 
-            * np.log(1 + k2 / (SPEED_OF_LIGHT**2))
-            / (4 * np.pi)
-        )
-    
-    def _active_inference_potential(self) -> np.ndarray:
-        """Calculate the active inference contribution to the potential."""
-        # Implement active inference through an effective potential
-        return (
-            INFORMATION_GENERATION_RATE 
-            * np.log(1 + np.abs(self.x_grid))
-            / (2 * np.pi)
-        )
-    
-    def _get_propagator(self, time: float) -> csr_matrix:
-        """Get or compute the propagator for a given time step."""
-        if time not in self._propagator_cache:
-            # Compute new propagator
-            hamiltonian = self.kinetic + self.potential
-            propagator = expm_multiply(
-                -1j * time * hamiltonian,
-                np.eye(self.spatial_points)
-            )
+        Args:
+            k_squared: Square of momentum values
             
-            # Cache management
-            if len(self._propagator_cache) >= self.cache_size:
-                # Remove oldest entry
-                oldest_time = min(self._propagator_cache.keys())
-                del self._propagator_cache[oldest_time]
+        Returns:
+            Correction factors for each k value
+        """
+        try:
+            # Avoid division by zero
+            k_mag = np.sqrt(np.abs(k_squared))
+            epsilon = 1e-10
             
-            self._propagator_cache[time] = propagator
+            # Calculate correction with numerical stability
+            correction = INFORMATION_GENERATION_RATE * k_mag / (SPEED_OF_LIGHT * (k_mag + epsilon))
             
-        return self._propagator_cache[time]
+            return correction
+            
+        except Exception as e:
+            logger.error(f"Holographic correction calculation failed: {str(e)}")
+            raise
+    
+    def get_kernel(self, x1: float, x2: float) -> complex:
+        """
+        Calculate the propagator kernel between two points.
+        
+        Args:
+            x1: First position
+            x2: Second position
+            
+        Returns:
+            Complex kernel value
+        """
+        try:
+            # Check cache
+            cached_value = self.kernel_cache.get(x1, x2)
+            if cached_value is not None:
+                return cached_value
+            
+            # Calculate spatial separation
+            dx = x2 - x1
+            
+            # Calculate phase factors
+            spatial_phase = np.exp(1j * self.k_grid * dx)
+            evolution_phase = np.exp(self.propagation_phase)
+            
+            # Calculate kernel
+            kernel = np.sum(spatial_phase * evolution_phase) / self.spatial_points
+            
+            # Cache result
+            self.kernel_cache.set(x1, x2, kernel)
+            
+            return kernel
+            
+        except Exception as e:
+            logger.error(f"Kernel calculation failed: {str(e)}")
+            raise
     
     def propagate(
         self,
-        state: np.ndarray,
-        time: float,
-        include_corrections: bool = True
+        wavefunction: np.ndarray,
+        steps: int = 1
     ) -> np.ndarray:
         """
-        Propagate a state forward in time.
+        Propagate wavefunction forward in time.
         
         Args:
-            state: Initial state vector
-            time: Propagation time
-            include_corrections: Whether to include holographic corrections
+            wavefunction: Initial state
+            steps: Number of time steps
             
         Returns:
-            Propagated state vector
+            Evolved wavefunction
         """
-        if state.shape != (self.spatial_points,):
-            raise ValueError(
-                f"State shape {state.shape} does not match "
-                f"spatial points {self.spatial_points}"
-            )
-        
-        propagator = self._get_propagator(time)
-        propagated_state = propagator @ state
-        
-        if include_corrections:
-            # Apply holographic and active inference corrections
-            propagated_state *= np.exp(
-                -INFORMATION_GENERATION_RATE * time / 2
-            )
+        try:
+            psi = wavefunction.copy()
             
-        return propagated_state
-    
-    def get_kernel(self, x1: float, x2: float) -> complex:
-        """Calculate the propagator kernel between two points."""
-        key = (x1, x2)
-        if key not in self._kernel_cache:
-            # Calculate kernel with holographic corrections
-            dx = x2 - x1
-            k2 = self.k_grid**2
-            phase = np.exp(1j * self.k_grid * dx)
-            
-            kernel = np.sum(
-                phase * np.exp(-0.5 * k2 * self.dt * (1 + self._holographic_correction(k2)))
-            ) / self.spatial_points
-            
-            # Cache management
-            if len(self._kernel_cache) >= self.cache_size:
-                # Remove a random entry (simple cache management)
-                del self._kernel_cache[next(iter(self._kernel_cache))]
+            for _ in range(steps):
+                # Transform to k-space
+                psi_k = np.fft.fft(psi)
                 
-            self._kernel_cache[key] = kernel
+                # Apply evolution
+                psi_k *= np.exp(self.propagation_phase)
+                
+                # Transform back
+                psi = np.fft.ifft(psi_k)
+                
+                # Normalize
+                psi /= np.linalg.norm(psi)
             
-        return self._kernel_cache[key]
+            return psi
+            
+        except Exception as e:
+            logger.error(f"Propagation failed: {str(e)}")
+            raise
 
 from ..config.constants import (
     INFORMATION_GENERATION_RATE,
@@ -207,226 +232,179 @@ class DualContinuumPropagator:
         spatial_extent: float,
         dt: float
     ):
+        """Initialize propagator with k-space grid."""
         self.spatial_points = spatial_points
         self.spatial_extent = spatial_extent
         self.dt = dt
-        self.dx = spatial_extent / spatial_points
+        
+        # Initialize k-space grid
+        self.dk = 2 * np.pi / spatial_extent
+        self.k_space = self.dk * np.fft.fftfreq(spatial_points) * spatial_points
         
         # Initialize operators
         self.kinetic_operator = self._initialize_kinetic_operator()
-        self.potential_operator = self._initialize_potential_operator()
-        self.coupling_operator = self._initialize_coupling_operator()
         
-        # Initialize k-space grid
-        self.k_space = 2 * np.pi * np.fft.fftfreq(spatial_points, self.dx)
-        
-        logger.info(f"Initialized DualContinuumPropagator")
-    
-    def evolve_quantum_state(
-        self,
-        quantum_state: np.ndarray,
-        classical_density: np.ndarray,
-        time: float
-    ) -> np.ndarray:
-        """Evolve quantum state with modified dynamics."""
-        try:
-            # Calculate modified dispersion
-            omega = self._calculate_modified_dispersion(time)
-            
-            # Transform to k-space
-            psi_k = np.fft.fft(quantum_state)
-            
-            # Apply modified evolution
-            psi_k_evolved = psi_k * np.exp(-1j * omega * self.dt)
-            
-            # Apply coupling term
-            coupling_phase = self._calculate_coupling_phase(
-                classical_density,
-                time
-            )
-            psi_k_evolved *= np.exp(-1j * coupling_phase)
-            
-            # Transform back to position space
-            evolved_state = np.fft.ifft(psi_k_evolved)
-            
-            # Normalize
-            evolved_state /= np.linalg.norm(evolved_state)
-            
-            return evolved_state
-            
-        except Exception as e:
-            logger.error(f"Quantum evolution failed: {str(e)}")
-            raise
-    
-    def evolve_classical_density(
-        self,
-        classical_density: np.ndarray,
-        quantum_state: np.ndarray,
-        time: float
-    ) -> np.ndarray:
-        """Evolve classical density with quantum backreaction."""
-        try:
-            # Calculate quantum potential
-            quantum_potential = self._calculate_quantum_potential(
-                quantum_state
-            )
-            
-            # Calculate classical force
-            classical_force = -np.gradient(classical_density) / self.dx
-            
-            # Calculate quantum force
-            quantum_force = -np.gradient(quantum_potential) / self.dx
-            
-            # Combine forces with coupling
-            total_force = (
-                classical_force +
-                COUPLING_CONSTANT * quantum_force *
-                np.exp(-INFORMATION_GENERATION_RATE * time)
-            )
-            
-            # Evolve density
-            evolved_density = classical_density - self.dt * np.gradient(
-                classical_density * total_force
-            ) / self.dx
-            
-            # Ensure positivity and normalization
-            evolved_density = np.maximum(evolved_density, 0)
-            evolved_density /= np.sum(evolved_density) * self.dx
-            
-            return evolved_density
-            
-        except Exception as e:
-            logger.error(f"Classical evolution failed: {str(e)}")
-            raise
-    
-    def _calculate_modified_dispersion(
-        self,
-        time: float
-    ) -> np.ndarray:
-        """Calculate modified dispersion relation ω(k)."""
-        try:
-            # Standard dispersion
-            omega_standard = np.sqrt(
-                (SPEED_OF_LIGHT * self.k_space)**2 +
-                (PLANCK_CONSTANT * self.k_space**2)**2
-            )
-            
-            # Holographic modification
-            modification = 1j * PLANCK_CONSTANT * INFORMATION_GENERATION_RATE * self.k_space
-            
-            # Combined dispersion
-            omega = omega_standard + modification
-            
-            # Apply temporal damping
-            omega *= np.exp(-INFORMATION_GENERATION_RATE * time)
-            
-            return omega
-            
-        except Exception as e:
-            logger.error(f"Dispersion calculation failed: {str(e)}")
-            raise
-    
-    def _calculate_coupling_phase(
-        self,
-        classical_density: np.ndarray,
-        time: float
-    ) -> np.ndarray:
-        """Calculate coupling-induced phase evolution."""
-        try:
-            # Calculate classical potential
-            classical_potential = np.log(classical_density + 1e-10)
-            
-            # Calculate coupling strength
-            coupling = COUPLING_CONSTANT * np.exp(-INFORMATION_GENERATION_RATE * time)
-            
-            # Calculate phase
-            phase = coupling * classical_potential
-            
-            return phase
-            
-        except Exception as e:
-            logger.error(f"Coupling phase calculation failed: {str(e)}")
-            raise
-    
-    def _calculate_quantum_potential(
-        self,
-        quantum_state: np.ndarray
-    ) -> np.ndarray:
-        """Calculate quantum potential for backreaction."""
-        try:
-            # Calculate probability density
-            density = np.abs(quantum_state)**2
-            
-            # Calculate quantum potential
-            gradient_squared = (np.gradient(density) / self.dx)**2
-            laplacian = np.gradient(np.gradient(density)) / self.dx**2
-            
-            quantum_potential = -0.5 * PLANCK_CONSTANT**2 * (
-                laplacian / density -
-                0.5 * gradient_squared / density**2
-            )
-            
-            return quantum_potential
-            
-        except Exception as e:
-            logger.error(f"Quantum potential calculation failed: {str(e)}")
-            raise
-    
     def _initialize_kinetic_operator(self) -> np.ndarray:
         """Initialize kinetic energy operator."""
         try:
-            # Create Laplacian in k-space
+            # Create Laplacian in k-space (now k_space is defined)
             laplacian_k = -(self.k_space**2)
-            
-            # Transform to position space
-            kinetic = np.fft.ifft(
-                -0.5 * PLANCK_CONSTANT**2 * laplacian_k
-            ).real
-            
-            return kinetic
-            
+            return 0.5 * laplacian_k  # Kinetic energy operator
         except Exception as e:
             logger.error(f"Kinetic operator initialization failed: {str(e)}")
             raise
+
+"""
+Field propagator implementation with caching support.
+"""
+from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+import numpy as np
+from ..config.constants import (
+    INFORMATION_GENERATION_RATE,
+    SPEED_OF_LIGHT,
+    COUPLING_CONSTANT
+)
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class CacheMetrics:
+    """Metrics for cache performance monitoring."""
+    hits: int = 0
+    misses: int = 0
+    evictions: int = 0
+    total_bytes: int = 0
     
-    def _initialize_potential_operator(self) -> np.ndarray:
-        """Initialize potential energy operator."""
-        try:
-            # Create harmonic potential
-            x = np.linspace(
-                -self.spatial_extent/2,
-                self.spatial_extent/2,
-                self.spatial_points
-            )
-            potential = 0.5 * x**2
+    @property
+    def hit_rate(self) -> float:
+        """Calculate cache hit rate."""
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+
+class CachedPropagator:
+    """Field propagator with integrated caching."""
+    
+    def __init__(
+        self,
+        spatial_points: int,
+        spatial_extent: float,
+        cache_size: int = 1000
+    ):
+        """Initialize propagator with caching."""
+        self.spatial_points = spatial_points
+        self.spatial_extent = spatial_extent
+        self.dx = spatial_extent / spatial_points
+        self.k_space = 2 * np.pi * np.fft.fftfreq(spatial_points, self.dx)
+        
+        # Initialize cache and metrics
+        self.cache: Dict[Tuple[float, float], np.ndarray] = {}
+        self.cache_size = cache_size
+        self.metrics = CacheMetrics()
+        
+        logger.info(
+            f"Initialized CachedPropagator with {spatial_points} points, "
+            f"cache_size={cache_size}"
+        )
+    
+    def get_propagator(
+        self,
+        dt: float,
+        gamma: float = INFORMATION_GENERATION_RATE
+    ) -> np.ndarray:
+        """Get cached propagator or compute if not in cache."""
+        cache_key = (dt, gamma)
+        
+        # Check cache
+        if cache_key in self.cache:
+            self.metrics.hits += 1
+            return self.cache[cache_key]
             
-            return potential
+        self.metrics.misses += 1
+        
+        # Compute propagator
+        k = self.k_space
+        propagator = np.exp(-1j * k**2 * dt / 2)
+        propagator *= np.exp(-gamma * dt) * (1 + gamma * np.abs(k) / SPEED_OF_LIGHT)
+        
+        # Cache management
+        if len(self.cache) >= self.cache_size:
+            self.metrics.evictions += 1
+            self.cache.pop(next(iter(self.cache)))
+        
+        # Update metrics
+        self.metrics.total_bytes += propagator.nbytes
+        self.cache[cache_key] = propagator
+        
+        return propagator
+    def propagate(
+        self,
+        wavefunction: np.ndarray,
+        dt: float,
+        gamma: Optional[float] = None
+    ) -> np.ndarray:
+        """
+        Propagate quantum state using cached propagator.
+        
+        Args:
+            wavefunction: Initial quantum state
+            dt: Time step
+            gamma: Optional custom information generation rate
+            
+        Returns:
+            Evolved quantum state
+        """
+        try:
+            # Get propagator (cached or computed)
+            propagator = self.get_propagator(dt, gamma or INFORMATION_GENERATION_RATE)
+            
+            # Transform to k-space
+            k_space = np.fft.fft(wavefunction)
+            
+            # Apply propagator
+            evolved = k_space * propagator
+            
+            # Transform back to real space
+            result = np.fft.ifft(evolved)
+            
+            # Normalize if needed
+            norm = np.linalg.norm(result)
+            if abs(norm - 1.0) > 1e-10:
+                result = result / norm
+                
+            return result
             
         except Exception as e:
-            logger.error(f"Potential operator initialization failed: {str(e)}")
-            raise
-    
-    def _initialize_coupling_operator(self) -> np.ndarray:
-        """Initialize quantum-classical coupling operator."""
+            logger.error(f"Propagation failed: {str(e)}")
+            raise      
+    def get_metrics(self) -> Dict[str, float]:
+        """Get cache performance metrics."""
+        return {
+            "hits": self.metrics.hits,
+            "misses": self.metrics.misses,
+            "evictions": self.metrics.evictions,
+            "hit_rate": self.metrics.hit_rate,
+            "total_bytes": self.metrics.total_bytes,
+            "cache_size": len(self.cache),
+            "max_size": self.cache_size
+        }
+
+class QuantumPropagator:
+    def __init__(self, n_qubits: int):
+        self.n_qubits = n_qubits
+        self.system_size = 2**n_qubits
+        
+    def propagate_state(
+        self,
+        state: np.ndarray,
+        hamiltonian: np.ndarray,
+        dt: float
+    ) -> np.ndarray:
+        """Propagate quantum state."""
         try:
-            # Create coupling matrix
-            x = np.linspace(
-                -self.spatial_extent/2,
-                self.spatial_extent/2,
-                self.spatial_points
-            )
-            X, X_prime = np.meshgrid(x, x)
-            
-            # Calculate coupling strength
-            coupling = COUPLING_CONSTANT * np.exp(
-                -(X - X_prime)**2 / (2 * self.dx**2)
-            )
-            
-            # Ensure symmetry
-            coupling = 0.5 * (coupling + coupling.T)
-            
-            return coupling
-            
+            evolution = scipy.linalg.expm(-1j * hamiltonian * dt)
+            return evolution @ state
         except Exception as e:
-            logger.error(f"Coupling operator initialization failed: {str(e)}")
+            logger.error(f"State propagation failed: {str(e)}")
             raise

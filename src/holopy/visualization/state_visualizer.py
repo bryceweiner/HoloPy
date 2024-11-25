@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 import seaborn as sns
 import pandas as pd
+
+from holopy.core.hilbert import HilbertSpace
 from ..metrics.collectors import StateMetrics
 from ..config.constants import INFORMATION_GENERATION_RATE
 import logging
@@ -16,8 +18,18 @@ logger = logging.getLogger(__name__)
 class HolographicVisualizer:
     """Visualization tools for holographic states and metrics."""
     
-    def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = output_dir or Path("./visualizations")
+    def __init__(self, hilbert_space: Optional[HilbertSpace] = None):
+        """Initialize visualizer.
+        
+        Args:
+            hilbert_space: Optional HilbertSpace instance
+        """
+        self.hilbert_space = hilbert_space or HilbertSpace(
+            dimension=128,
+            extent=10.0,
+            compression_method="none"
+        )
+        self.output_dir = Path("./visualizations")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Set style

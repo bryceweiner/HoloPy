@@ -1,65 +1,61 @@
 """
-Advanced compression system for quantum states.
+Compression management system for holographic state data.
 """
+from typing import Dict, Tuple, Optional, Union, Any
 import numpy as np
-from typing import Tuple, Optional
 import zlib
-import lz4.frame
-import blosc
-from enum import Enum
 import logging
 
 logger = logging.getLogger(__name__)
 
-class CompressionMethod(Enum):
-    """Available compression methods."""
-    ZLIB = "zlib"
-    LZ4 = "lz4"
-    BLOSC = "blosc"
-
 class CompressionManager:
-    """Manages compression of quantum states."""
+    """Manages compression and decompression of quantum state data."""
     
-    def __init__(
-        self,
-        default_method: CompressionMethod = CompressionMethod.BLOSC,
-        compression_level: int = 6
-    ):
-        self.default_method = default_method
-        self.compression_level = compression_level
+    def __init__(self, compression_level: int = 6):
+        """
+        Initialize compression manager.
         
+        Args:
+            compression_level: Integer from 0-9 controlling compression level
+        """
+        self.compression_level = compression_level
+        logger.info(f"Initialized CompressionManager with level {compression_level}")
+    
     def compress_state(
         self,
-        state: np.ndarray,
-        method: Optional[CompressionMethod] = None
-    ) -> Tuple[bytes, Dict]:
-        """Compress quantum state data."""
-        method = method or self.default_method
+        state_data: Union[np.ndarray, bytes],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Compress quantum state data with metadata.
         
-        # Convert to bytes
-        state_bytes = state.tobytes()
-        
-        # Apply compression
-        if method == CompressionMethod.ZLIB:
-            compressed = zlib.compress(state_bytes, self.compression_level)
-        elif method == CompressionMethod.LZ4:
-            compressed = lz4.frame.compress(
-                state_bytes,
-                compression_level=self.compression_level
-            )
-        else:  # BLOSC
-            compressed = blosc.compress(
-                state_bytes,
-                typesize=16,  # complex128
-                clevel=self.compression_level
-            )
+        Args:
+            state_data: Numpy array or bytes to compress
+            metadata: Optional dictionary of metadata
             
-        compression_info = {
-            "method": method.value,
-            "original_size": len(state_bytes),
-            "compressed_size": len(compressed),
-            "dtype": str(state.dtype),
-            "shape": state.shape
-        }
-        
-        return compressed, compression_info 
+        Returns:
+            Tuple of (compressed_bytes, metadata_dict)
+        """
+        try:
+            # Convert numpy array to bytes if needed
+            if isinstance(state_data, np.ndarray):
+                state_bytes = state_data.tobytes()
+            else:
+                state_bytes = state_data
+                
+            # Compress the data
+            compressed = zlib.compress(state_bytes, level=self.compression_level)
+            
+            # Update metadata
+            meta = metadata or {}
+            meta.update({
+                'original_size': len(state_bytes),
+                'compressed_size': len(compressed),
+                'compression_ratio': len(compressed) / len(state_bytes)
+            })
+            
+            return compressed, meta
+            
+        except Exception as e:
+            logger.error(f"Compression failed: {str(e)}")
+            raise

@@ -21,6 +21,7 @@ from ..config.constants import (
     COUPLING_CONSTANT,
     CRITICAL_THRESHOLD
 )
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +57,16 @@ class SystemState:
 class MetricsCollector:
     """Comprehensive metrics collection and analysis system."""
     
-    def __init__(
-        self,
-        output_dir: Optional[Path] = None,
-        cache_size: int = 1000
-    ):
-        self.output_dir = output_dir or Path("metrics")
+    def __init__(self, output_dir=None):
+        """Initialize metrics collector."""
+        self.output_dir = output_dir or Path("output")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics = defaultdict(list)
         
-        self.cache_size = cache_size
-        self.state_history: List[SystemState] = []
-        self.metrics_df = pd.DataFrame()
+        # Use default style instead of seaborn
+        plt.style.use('default')
         
-        # Initialize plot styling
-        plt.style.use('seaborn')
-        sns.set_palette("husl")
-        
-        logger.info(f"Initialized MetricsCollector with cache_size={cache_size}")
+        logger.info(f"Initialized MetricsCollector with output_dir={output_dir}")
     
     def collect_state(
         self,

@@ -10,19 +10,24 @@ import pandas as pd
 from dataclasses import dataclass
 from scipy.sparse import diags
 from scipy.sparse.linalg import expm_multiply
+from typing_extensions import TypeAlias  # For Python < 3.10
 
 from holopy.core.propagator import DualContinuumPropagator
 from holopy.inference.active_inference import ActiveInferenceEngine, PredictionMetrics
 from holopy.metrics.collectors import MetricsCollector
 from holopy.metrics.validation_suite import HolographicValidationSuite
 from .hilbert import HilbertSpace
-from ..config.constants import BOLTZMANN_CONSTANT, COUPLING_CONSTANT, INFORMATION_GENERATION_RATE, CRITICAL_THRESHOLD, SPEED_OF_LIGHT, PLANCK_CONSTANT, E8_DIMENSION, TOTAL_DIMENSION
+from ..config.constants import BOLTZMANN_CONSTANT, COUPLING_CONSTANT, INFORMATION_GENERATION_RATE, PLANCK_CONSTANT, E8_DIMENSION, TOTAL_DIMENSION
 from .information_hierarchy import InformationHierarchyProcessor
 from holopy.visualization.state_visualizer import HolographicVisualizer
 from holopy.optimization.performance_optimizer import PerformanceOptimizer
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Type aliases
+FloatArray: TypeAlias = np.ndarray[np.float64]
+ComplexArray: TypeAlias = np.ndarray[np.complex128]
 
 @dataclass
 class DualState:
@@ -31,8 +36,13 @@ class DualState:
     classical_density: np.ndarray
     time: float
     coupling_strength: float
-    coherence_hierarchy: List[float]
+    coherence_hierarchy: tuple[float, ...]
     information_content: float
+
+    def __post_init__(self):
+        """Validate state initialization."""
+        if not isinstance(self.coherence_hierarchy, tuple):
+            self.coherence_hierarchy = tuple(self.coherence_hierarchy)
 
 class HilbertContinuum:
     """Enhanced HilbertContinuum with information hierarchy processing."""
@@ -40,16 +50,25 @@ class HilbertContinuum:
     def __init__(
         self,
         hilbert_space: HilbertSpace,
-        spatial_points: int,
-        spatial_extent: float,
-        enable_active_inference: bool = True,
+        dt: float,
         enable_hierarchy: bool = True,
-        metrics_dir: Optional[Path] = None,
-        dt: float = 0.01
+        output_dir: Optional[Path] = None
     ):
-        self.hilbert = hilbert_space
-        self.spatial_points = spatial_points
-        self.spatial_extent = spatial_extent
+        """Initialize Hilbert continuum.
+        
+        Args:
+            hilbert_space: HilbertSpace instance
+            dt: Time step
+            enable_hierarchy: Enable hierarchical structure
+            output_dir: Output directory for metrics and plots
+        """
+        self.hilbert_space = hilbert_space
+        self.dt = dt
+        self.enable_hierarchy = enable_hierarchy
+        self.dimension = hilbert_space.dimension
+        self.extent = hilbert_space.extent
+        self.output_dir = output_dir or Path("output")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize matter and antimatter states
         self.matter_wavefunction = None
@@ -72,54 +91,54 @@ class HilbertContinuum:
             'stability_measure'
         ])
         
-        # Initialize propagator and inference engine
+        # Initialize propagator with all required parameters
         self.propagator = DualContinuumPropagator(
-            spatial_points=spatial_points,
-            spatial_extent=spatial_extent
+            spatial_points=self.dimension,
+            spatial_extent=self.extent,
+            dt=self.dt
         )
         
-        self.inference_engine = (
-            ActiveInferenceEngine(
-                spatial_points=spatial_points,
-                dt=0.01,  # Default timestep
+        if self.enable_hierarchy:
+            self.inference_engine = ActiveInferenceEngine(
+                spatial_points=self.dimension,
+                dt=self.dt,
                 prediction_horizon=10
-            ) if enable_active_inference else None
-        )
-        
-        # Initialize information hierarchy
-        self.hierarchy_processor = (
-            InformationHierarchyProcessor(
-                spatial_points=spatial_points,
-                spatial_extent=spatial_extent
-            ) if enable_hierarchy else None
-        )
+            )
+            
+            self.hierarchy_processor = InformationHierarchyProcessor(
+                spatial_points=self.dimension,
+                spatial_extent=self.extent
+            )
+        else:
+            self.inference_engine = None
+            self.hierarchy_processor = None
         
         # Initialize validation suite
         self.validator = HolographicValidationSuite()
         
         # Initialize metrics collector
         self.metrics_collector = MetricsCollector(
-            output_dir=metrics_dir
+            output_dir=self.output_dir
         )
         
         # Initialize optimization components
-        self.optimizer = PerformanceOptimizer(spatial_points)
-        self.visualizer = HolographicVisualizer(spatial_points, spatial_extent)
+        self.optimizer = PerformanceOptimizer(self.dimension)
+        self.visualizer = HolographicVisualizer(self.dimension, self.extent)
         
         # Cache frequently used values
         self.dt = dt
-        self.cached_propagator = self.optimizer.get_cached_propagator(dt, spatial_extent)
+        self.cached_propagator = self.optimizer.get_cached_propagator(dt, self.extent)
         
         logger.info(
-            f"Initialized enhanced HilbertContinuum with {spatial_points} points"
+            f"Initialized enhanced HilbertContinuum with {self.dimension} points"
         )
     
     def create_initial_state(self) -> None:
         """Initialize dual continuum quantum states."""
         try:
             # Create spatial grid
-            x = np.linspace(-self.spatial_extent/2, self.spatial_extent/2, self.spatial_points)
-            sigma = self.spatial_extent/20
+            x = np.linspace(-self.extent/2, self.extent/2, self.dimension)
+            sigma = self.extent/20
             
             # Initial Gaussian state
             psi = np.exp(-x**2/(2*sigma**2))
@@ -247,7 +266,7 @@ class HilbertContinuum:
             ))
             
             # Apply holographic corrections
-            coherence = overlap / self.spatial_points
+            coherence = overlap / self.dimension
             
             # Include active inference effects
             coherence *= (1 + self._calculate_active_inference_term())
@@ -299,7 +318,7 @@ class HilbertContinuum:
                 self.matter_wavefunction,
                 np.conj(self.antimatter_wavefunction)
             )
-            return np.abs(np.trace(rho_c)) / self.spatial_points
+            return np.abs(np.trace(rho_c)) / self.dimension
             
         except Exception as e:
             logger.error(f"Coupling strength calculation failed: {str(e)}")

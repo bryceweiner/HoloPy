@@ -4,7 +4,7 @@ import time
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from ..core.hilbert_continuum import DualState, HilbertContinuum
+from ..core.hilbert_continuum import DualState, HilbertContinuum, HilbertSpace
 from ..config.constants import (
     BENCHMARK_CONFIGS,
     INFORMATION_GENERATION_RATE,
@@ -69,10 +69,17 @@ class SystemBenchmark:
     ) -> BenchmarkResult:
         """Run single benchmark configuration."""
         try:
-            # Initialize system
+            # Initialize Hilbert space first
+            hilbert_space = HilbertSpace(
+                spatial_points=config['spatial_points'],
+                spatial_extent=config['spatial_extent']
+            )
+            
+            # Initialize continuum with proper arguments
             continuum = HilbertContinuum(
                 spatial_points=config['spatial_points'],
                 spatial_extent=config['spatial_extent'],
+                hilbert_space=hilbert_space,
                 dt=config['dt']
             )
             
